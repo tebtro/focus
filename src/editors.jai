@@ -2243,7 +2243,7 @@ delete_word_right :: (editor: *Editor, buffer: *Buffer) {
 }
 
 delete_left_char :: (editor: *Editor, buffer: *Buffer) {
-    should_delete_closing_bracket := config.settings.auto_close_brackets && all_cursors_can_auto_delete_closing_bracket(editor, buffer);
+    should_delete_closing_bracket := config.settings.auto_delete_brackets && all_cursors_can_auto_delete_closing_bracket(editor, buffer);
 
     // NOTE: we don't have to worry about a cursor with no selection being immediately next
     //       to the non-cursor end of another cursor's selection (thanks to organise_cursors),
