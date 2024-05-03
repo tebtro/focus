@@ -167,12 +167,14 @@ get_lang_from_name :: (lang_name: string) -> Buffer.Lang {
     if ends_with_nocase(lang_name, "golang")       return .Golang;
     if ends_with_nocase(lang_name, "js")           return .Js;
     if ends_with_nocase(lang_name, "jsx")          return .Js;
+    if ends_with_nocase(lang_name, "json")         return .Json;
     if ends_with_nocase(lang_name, "ts")           return .Js;
     if ends_with_nocase(lang_name, "tsx")          return .Js;
     if ends_with_nocase(lang_name, "lua")          return .Lua;
     if ends_with_nocase(lang_name, "odin")         return .Odin;
     if ends_with_nocase(lang_name, "python")       return .Python;
     if ends_with_nocase(lang_name, "renpy")        return .RenPy;
+    if ends_with_nocase(lang_name, "rust")         return .Rust;
     if ends_with_nocase(lang_name, "html")         return .Html;
     if ends_with_nocase(lang_name, "xml")          return .Xml;
     if ends_with_nocase(lang_name, "worklog")      return .Worklog;

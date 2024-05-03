@@ -468,6 +468,7 @@ tokenize_for_indentation :: (buffer: *Buffer) -> [] Indentation_Token /* temp */
         case .Jai;          return tokenize_jai_for_indentation(buffer);
         case .C;            return tokenize_c_like_lang_for_indentation(buffer, get_next_c_token);
         case .Js;           return tokenize_c_like_lang_for_indentation(buffer, get_next_js_token);
+        case .Json;         return tokenize_c_like_lang_for_indentation(buffer, get_next_json_token);
         case .CSharp;       return tokenize_csharp_for_indentation(buffer);
         case .Glsl;         return tokenize_c_like_lang_for_indentation(buffer, get_next_glsl_token);
         case .Hlsl;         return tokenize_c_like_lang_for_indentation(buffer, get_next_hlsl_token);
@@ -476,6 +477,7 @@ tokenize_for_indentation :: (buffer: *Buffer) -> [] Indentation_Token /* temp */
         case .Xml;          return tokenize_xml_for_indentation(buffer);
         case .Lua;          return tokenize_lua_for_indentation(buffer);
         case .Odin;         return tokenize_odin_for_indentation(buffer);
+        case .Rust;         return tokenize_rust_for_indentation(buffer);
     }
 
     return .[];
@@ -752,6 +754,7 @@ strip_trailing_whitespace :: (using buffer: *Buffer, buffer_id: s64) {
     bytes.count = stripped.count;
     unlock(*content_lock);
 
+    dirty = true;
     rescan_for_lines(buffer);
 
     for * editor, editor_id : open_editors {
@@ -1183,10 +1186,12 @@ get_tokenize_function :: (lang: Buffer.Lang) -> Tokenize_Function {
         case .Hlsl;         return highlight_hlsl_syntax;
         case .Golang;       return highlight_golang_syntax;
         case .Js;           return highlight_js_syntax;
+        case .Json;         return highlight_json_syntax;
         case .Lua;          return highlight_lua_syntax;
         case .Odin;         return highlight_odin_syntax;
         case .Python;       return highlight_python_syntax;
         case .RenPy;        return highlight_renpy_syntax;
+        case .Rust;         return highlight_rust_syntax;
         case .Html;         return highlight_xml_syntax;
         case .Xml;          return highlight_xml_syntax;
         case .Worklog;      return highlight_worklog;
@@ -1370,10 +1375,12 @@ Buffer :: struct {
         Hlsl;
         Golang;
         Js;
+        Json;
         Lua;
         Odin;
         Python;
         RenPy;
+        Rust;
         Xml;
         Html;
         Worklog;

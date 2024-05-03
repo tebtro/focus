@@ -1165,10 +1165,13 @@ get_lang_from_path :: (path: string) -> Buffer.Lang {
             case "jsx";            #through;
             case "js";             lang = .Js;
 
+            case "json";           lang = .Json;
+
             case "lua";            lang = .Lua;
             case "odin";           lang = .Odin;
             case "py";             lang = .Python;
             case "rpy";            lang = .RenPy;
+            case "rs";             lang = .Rust;
 
             case "vert"; #through;
             case "frag"; #through;
@@ -3045,6 +3048,7 @@ toggle_comment :: (editor: *Editor, buffer: *Buffer) {
         case .Hlsl;         comment = "//";
         case .Jai;          comment = "//";
         case .Js;           comment = "//";
+        case .Json;         comment = "//";
         case .Lua;          comment = "--";
         case .Odin;         comment = "//";
         case .Focus_Config; comment = "#";
@@ -3217,6 +3221,7 @@ toggle_block_comment :: (editor: *Editor, buffer: *Buffer) {
         case .Glsl;         comment_start = "/*"; comment_end = "*/";
         case .Jai;          comment_start = "/*"; comment_end = "*/";
         case .Js;           comment_start = "/*"; comment_end = "*/";
+        case .Json;         comment_start = "/*"; comment_end = "*/";
         case .Odin;         comment_start = "/*"; comment_end = "*/";
         case .Lua;          comment_start = "--[["; comment_end = "]]";
         case .Html;         comment_start = "<!--"; comment_end = "-->";
@@ -3333,7 +3338,7 @@ copy_current_line_info :: (using editor: *Editor, buffer: Buffer) {
     file_path: string = copy_temporary_string(ifx buffer.has_file then buffer.file.full_path else "<in-memory-buffer>");
     path_overwrite_separators(file_path, PATH_SEPARATOR);  // match the system separator
     coords := offset_to_real_coords(buffer, cursors[main_cursor].pos);
-    line_info := tprint("%:%:%", file_path, coords.line + 1, coords.col + 1);
+    line_info := tprint("%:%", file_path, coords.line + 1);
     os_clipboard_set_text(line_info);
     add_success_message("String '%' copied to clipboard", line_info, dismiss_in_seconds = 5);
 }
@@ -3488,7 +3493,10 @@ open_buffers_lock: Mutex;  // must hold while adding a new buffer
 
 open_buffers: Simple_Bucket_Array(Buffer, items_per_bucket = 1024, max_buckets = 1024);  // 8 Kb for pointer array, ~1 million buffers is the maximum
 open_editors: [..] Editor;
-buffers_table: Table(string, s64);  // a map from full buffer path to buffer id (only for the open buffers, obviously)
+
+buffers_table: Table(string, s64,
+                     given_hash_function = x => Hash.get_hash(to_lower_copy_new(x,, temp)),
+                     given_compare_function = platform_path_equals);  // a map from full buffer path to buffer id (only for the open buffers, obviously)
 
 most_recent_buffers: [..] s64;  // updated when an editor is activated, used to switch between open files
 

@@ -898,6 +898,7 @@ dont_ignore_next_window_resize := false;
 #load "langs/hlsl.jai";
 #load "langs/golang.jai";
 #load "langs/js.jai";
+#load "langs/json.jai";
 #load "langs/lua.jai";
 #load "langs/odin.jai";
 #load "langs/python.jai";
@@ -907,6 +908,7 @@ dont_ignore_next_window_resize := false;
 #load "langs/yang.jai";
 #load "langs/zig.jai";
 #load "langs/uxntal.jai";
+#load "langs/rust.jai";
 
 #if OS == .WINDOWS {
     #load "platform/windows.jai";
@@ -955,7 +957,8 @@ _ :: #import "Linux_Display"()(VALIDATE_USAGE = DEBUG);
 #import "Unicode";
 #import "Window_Creation";
 
-re :: #import "uniform";
+re   :: #import "uniform";
+Hash :: #import "Hash";
 
 // NOTE to future self: remove `.NeverCapture` from `BASE_REGEX_FLAGS` if we ever want to have
 //                      find-and-replace with regex capture support
