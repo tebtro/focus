@@ -1,4 +1,4 @@
-highlight_python_syntax :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] Buffer_Region {
+tokenize_python :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] Buffer_Region {
     tokenizer := get_tokenizer(buffer, start_offset, count);
 
     last_token: Token;
@@ -11,13 +11,13 @@ highlight_python_syntax :: (using buffer: *Buffer, start_offset := -1, count := 
 
         // Maybe highlight a function
         if token.type == .punctuation && token.punctuation == .l_paren && last_token.type == .identifier {
-            memset(colors.data + last_token.start, xx Color.CODE_FUNCTION, last_token.len);
+            memset(tokens.data + last_token.start, xx Color.CODE_FUNCTION, last_token.len);
         }
 
         last_token = token;
 
         color := COLOR_MAP[token.type];
-        memset(colors.data + token.start, xx color, token.len);
+        memset(tokens.data + token.start, xx color, token.len);
     }
 
     return .[];

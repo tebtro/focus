@@ -1,4 +1,4 @@
-highlight_uxntal_syntax :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] Buffer_Region {
+tokenize_uxntal :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] Buffer_Region {
     tokenizer := get_tokenizer(buffer, start_offset, count);
 
     while true {
@@ -6,7 +6,7 @@ highlight_uxntal_syntax :: (using buffer: *Buffer, start_offset := -1, count := 
         if token.type == .eof then break;
 
         color := COLOR_MAP[token.type];
-        memset(colors.data + token.start, xx color, token.len);
+        memset(tokens.data + token.start, xx color, token.len);
     }
 
     return .[];

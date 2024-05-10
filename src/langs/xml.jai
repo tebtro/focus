@@ -1,17 +1,17 @@
-highlight_xml_syntax :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] Buffer_Region {
+tokenize_xml :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] Buffer_Region {
     tokenizer := get_xml_tokenizer(buffer, start_offset, count);
 
     while true {
         token := get_next_token(*tokenizer);
         if token.type == .eof break;
         color := COLOR_MAP[token.type];
-        memset(colors.data + token.start, xx color, token.len);
+        memset(tokens.data + token.start, xx color, token.len);
     }
 
     return .[];
 }
 
-tokenize_xml_for_indentation :: (using buffer: Buffer) -> [] Indentation_Token /* temp */ {
+tokenize_xml_for_indentation :: (buffer: Buffer) -> [] Indentation_Token /* temp */ {
     tokens: [..] Indentation_Token;
     tokens.allocator = temp;
 

@@ -1,6 +1,6 @@
 // Based on https://www.lua.org/manual/5.4/manual.html#3
 
-highlight_lua_syntax :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] Buffer_Region {
+tokenize_lua :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] Buffer_Region {
     tokenizer := get_lua_tokenizer(buffer, start_offset, count);
 
     while true {
@@ -9,15 +9,15 @@ highlight_lua_syntax :: (using buffer: *Buffer, start_offset := -1, count := -1)
 
         prev := tokenizer.last_token;
         if (token.type == .punctuation && token.punctuation == .l_paren) && prev.type == .identifier {
-            memset(colors.data + prev.start, xx Color.CODE_FUNCTION, prev.len);
+            memset(tokens.data + prev.start, xx Color.CODE_FUNCTION, prev.len);
         }
 
         if token.type == .identifier && (prev.type == .keyword && prev.keyword == .kw_function) {
-            memset(colors.data + token.start, xx Color.CODE_FUNCTION, token.len);
+            memset(tokens.data + token.start, xx Color.CODE_FUNCTION, token.len);
         }
         else {
             color := COLOR_MAP[token.type];
-            memset(colors.data + token.start, xx color, token.len);
+            memset(tokens.data + token.start, xx color, token.len);
         }
 
         tokenizer.last_token = token;
@@ -26,7 +26,7 @@ highlight_lua_syntax :: (using buffer: *Buffer, start_offset := -1, count := -1)
     return .[];
 }
 
-tokenize_lua_for_indentation :: (using buffer: Buffer) -> [] Indentation_Token /* temp */ {
+tokenize_lua_for_indentation :: (buffer: Buffer) -> [] Indentation_Token /* temp */ {
     tokens: [..] Indentation_Token;
     tokens.allocator = temp;
 
