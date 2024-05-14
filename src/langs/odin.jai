@@ -77,10 +77,10 @@ tokenize_odin :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] 
         }
 
         if should_highlight_last_token_as_proc(tokenizer, token) {
-            memset(tokens.data + tokenizer.last_tokens[0].start, xx Color.CODE_FUNCTION, tokenizer.last_tokens[0].len);
+            memset(tokens.data + tokenizer.last_tokens[0].start, xx Token_Type.function, tokenizer.last_tokens[0].len);
         }
         if should_highlight_second_last_token_as_proc(tokenizer, token) {
-            memset(tokens.data + tokenizer.last_tokens[1].start, xx Color.CODE_FUNCTION, tokenizer.last_tokens[1].len);
+            memset(tokens.data + tokenizer.last_tokens[1].start, xx Token_Type.function, tokenizer.last_tokens[1].len);
         }
 
         // Remember last 3 tokens
@@ -88,8 +88,7 @@ tokenize_odin :: (using buffer: *Buffer, start_offset := -1, count := -1) -> [] 
         tokenizer.last_tokens[1] = tokenizer.last_tokens[0];
         tokenizer.last_tokens[0] = token;
 
-        color := COLOR_MAP[token.type];
-        memset(tokens.data + token.start, xx color, token.len);
+        memset(tokens.data + token.start, xx token.type, token.len);
     }
 
     return .[];
@@ -477,6 +476,16 @@ parse_period :: (using tokenizer: *Odin_Tokenizer, token: *Token) {
                     token.operation = .double_period_less_than;
                     t += 1;
             }
+
+        case;
+            // Maybe it's an enum variant
+            if last_tokens[0].type != .identifier && tokenizer.had_white_space_to_skip {
+                next_token := peek_next_token(tokenizer);
+                if next_token.type == .identifier {
+                    token.type = .enum_variant;
+                    t = buf.data + next_token.start + next_token.len;  // fast-forward
+                }
+            }
     }
 }
 
@@ -701,11 +710,12 @@ Odin_Tokenizer :: struct {
     t:       *u8;  // cursor
 
     last_tokens: [3] Token;  // to retroactively highlight procedures
+    had_white_space_to_skip := false;
 }
 
 Token :: struct {
     start, len: s32;
-    type: Type;
+    type: Token_Type;
 
     // Additional info to distinguish between keywords/punctuation
     union {
@@ -715,45 +725,7 @@ Token :: struct {
         attribute:   Attribute;
         directive:   Directive;
     }
-
-    Type :: enum u16 {
-        eof;
-
-        identifier;
-        string_literal;
-        raw_string;
-        number;
-        comment;
-        multiline_comment;
-        operation;
-        punctuation;
-        keyword;
-        type_keyword;
-        value_keyword;
-        attribute;
-        directive;
-        invalid;
-    }
 }
-
-// Must match the order of the types in the enum
-COLOR_MAP :: Color.[
-    .CODE_COMMENT,       // eof - obviously not used
-    .CODE_DEFAULT,       // identifier
-    .CODE_STRING,        // string_literal
-    .CODE_STRING,        // raw_string
-    .CODE_VALUE,         // number
-    .CODE_COMMENT,       // comment
-    .CODE_COMMENT,       // multiline_comment
-    .CODE_OPERATION,     // operation
-    .CODE_PUNCTUATION,   // punctuation
-    .CODE_KEYWORD,       // keyword
-    .CODE_TYPE,          // type_keyword
-    .CODE_VALUE,         // value_keyword
-    .CODE_KEYWORD,       // attribute
-    .CODE_KEYWORD,       // directive
-    .CODE_ERROR,         // invalid
-];
 
 PUNCTUATION :: string.[
     "attribute", "caret", "comma", "dollar", "period", "question", "semicolon",
@@ -903,7 +875,7 @@ DIRECTIVES :: string.[
 }
 
 Keyword_Token :: struct {
-    type: Token.Type;
+    type: Token_Type;
     keyword: Keyword;
 }
 
@@ -914,9 +886,9 @@ KEYWORD_MAP :: #run -> Table(string, Keyword_Token) {
 
     #insert -> string {
         b: String_Builder;
-        for KEYWORDS        append(*b, sprint("table_add(*table, \"%1\", Keyword_Token.{ type = .keyword,       keyword = .kw_%1 });\n", it));
-        for TYPE_KEYWORDS   append(*b, sprint("table_add(*table, \"%1\", Keyword_Token.{ type = .type_keyword,  keyword = .kw_%1 });\n", it));
-        for VALUE_KEYWORDS  append(*b, sprint("table_add(*table, \"%1\", Keyword_Token.{ type = .value_keyword, keyword = .kw_%1 });\n", it));
+        for KEYWORDS        append(*b, sprint("table_add(*table, \"%1\", Keyword_Token.{ type = .keyword, keyword = .kw_%1 });\n", it));
+        for TYPE_KEYWORDS   append(*b, sprint("table_add(*table, \"%1\", Keyword_Token.{ type = .type,    keyword = .kw_%1 });\n", it));
+        for VALUE_KEYWORDS  append(*b, sprint("table_add(*table, \"%1\", Keyword_Token.{ type = .value,   keyword = .kw_%1 });\n", it));
         return builder_to_string(*b);
     }
 
@@ -974,11 +946,18 @@ MAX_DIRECTIVE_LENGTH :: #run -> s32 {
 }
 
 eat_white_space :: (using tokenizer: *Odin_Tokenizer) {
+    old_t := t;
     while t < max_t {
         if t.* == #char "\n"    then break;  // Make newlines a token
         if !is_white_space(t.*) then break;
         t += 1;
     }
+    had_white_space_to_skip = t != old_t;
 }
 
-#import "Hash_Table";
+peek_next_token :: (using tokenizer: Odin_Tokenizer, skip_white_space := true) -> Token {
+    tokenizer_copy := tokenizer;
+    if skip_white_space then eat_white_space(*tokenizer_copy);
+    token := get_next_token(*tokenizer_copy);
+    return token;
+}

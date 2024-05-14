@@ -69,9 +69,18 @@ eat_until_newline :: (using tokenizer: *Tokenizer) {
 }
 
 eat_white_space :: (using tokenizer: *Tokenizer) {
+    t_old := t;
     while t < max_t && is_white_space(t.*) {
         t += 1;
     }
+    had_white_space_to_skip = t != t_old;
+}
+
+peek_next_token :: (using tokenizer: Tokenizer, skip_white_space := true, $Token: Type, $get_next_token: (*Tokenizer) -> Token) -> Token {
+    tokenizer_copy := tokenizer;
+    if skip_white_space then eat_white_space(*tokenizer_copy);
+    token := get_next_token(*tokenizer_copy);
+    return token;
 }
 
 is_hex :: inline (c: u8) -> bool {
@@ -192,19 +201,20 @@ Tokenizer :: struct {
     t:       *u8;  // cursor
 
     prev_tokens: [3] *void;
+    had_white_space_to_skip := false;  // to indicate whether any white space was on the left of the current token
 }
 
 Code_Highlight :: struct {
     offset: s32;
     count: s32;
-    color_num: u8;
+    token_type: Token_Type;
 }
 
 // This enum is supposed to list all possible code tokens we might have, for all languages
 Token_Type :: enum u8 {
+    default :: 0;   // must be first
     eof;
     invalid;
-    default;
 
     string_literal;
     multiline_string;
@@ -217,6 +227,7 @@ Token_Type :: enum u8 {
 
     error;
     warning;
+    highlight;
 
     comment;
     multiline_comment;
@@ -231,6 +242,7 @@ Token_Type :: enum u8 {
     attribute;
     enum_variant;
     macro;
+    function;
 
     builtin_variable;
     builtin_function;
@@ -245,14 +257,4 @@ Token_Type :: enum u8 {
     header4;
     header5;
     header6;
-
-    // Language-specific tokens below
-
-    config_modifier_key;
-    config_key_string;
-    config_action;
-
-    hlsl_semantic;
-
-    rust_lifetime;
 }

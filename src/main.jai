@@ -956,6 +956,7 @@ _ :: #import "Linux_Display"()(VALIDATE_USAGE = DEBUG);
 #import "Thread";
 #import "Unicode";
 #import "Window_Creation";
+#import "Hash_Table";
 
 re   :: #import "uniform";
 Hash :: #import "Hash";

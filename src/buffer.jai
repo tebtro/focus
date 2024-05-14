@@ -1294,7 +1294,7 @@ Buffer :: struct {
     bytes: [..] u8;
     line_starts: [..] s32;       // real offsets of newlines in the bytes array
 
-    tokens: [..] u8;             // we assign a token to each byte (even for multi-byte chars).
+    tokens: [..] Token_Type;     // we assign a token to each byte (even for multi-byte chars).
 
     regions: [..] Buffer_Region; // for highlighting parts of buffer
 
