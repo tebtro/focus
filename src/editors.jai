@@ -110,6 +110,8 @@ active_editor_handle_event :: (editor: *Editor, buffer: *Buffer, event: Input.Ev
             case .move_up_fast;                     search_bar_move_cursor(editor, buffer, -5);                                         return true;
             case .move_down_fast;                   search_bar_move_cursor(editor, buffer,  5);                                         return true;
 
+            case .close_all_editors;                close_search_bar(editor); close_all_editors();                                      return true;
+            case .close_other_editors;              close_search_bar(editor); close_other_editors();                                    return true;
             case .close_current_editor;             close_search_bar(editor); close_editor(.current);                                   return true;
             case .close_other_editor;               close_editor(.other);                                                               return true;
             case .close_left_editor;                if editors.active == editors.left  close_search_bar(editor); close_editor(.left);   return true;
@@ -160,6 +162,8 @@ active_editor_handle_event :: (editor: *Editor, buffer: *Buffer, event: Input.Ev
         case .toggle_expand;                    toggle_expand();
         case .search_in_buffer;                 open_search_bar(editor, buffer);
         case .search_in_buffer_dropdown_mode;   open_search_bar(editor, buffer, .dropdown);
+        case .close_all_editors;                close_all_editors();
+        case .close_other_editors;              close_other_editors();
         case .close_current_editor;             close_editor(.current);
         case .close_other_editor;               close_editor(.other);
         case .close_left_editor;                close_editor(.left);
@@ -867,6 +871,24 @@ do_things_on_editor_close :: (editor_id: s64) {
         array_ordered_remove_by_value(*most_recent_buffers, editor.buffer_id);
         buffer.num_times_opened = 0;  // deprioritise it in the full file list
     }
+}
+
+close_other_editors :: () {
+    array_reset_keeping_memory(*most_recent_buffers);
+
+    using editors;
+    left_valid  := left  >= 0 && left  < open_editors.count;
+    right_valid := right >= 0 && right < open_editors.count;
+    if left_valid  then array_add_if_unique(*most_recent_buffers, open_editors[left].buffer_id);
+    if right_valid then array_add_if_unique(*most_recent_buffers, open_editors[right].buffer_id);
+
+    close_other_editor();
+}
+
+close_all_editors :: () {
+    editors.layout = .None;
+    array_reset_keeping_memory(*most_recent_buffers);
+    update_window_title();
 }
 
 search_bar_is_open :: inline (using editor: *Editor) -> bool {
@@ -3385,6 +3407,7 @@ Editor :: struct {
     last_width_in_chars: s32 = S32_MAX;
     wrapped_line_starts: [..] s32;  // empty when line wrap is off
 
+    // TODO: make a global array instead
     paste_animations: [..] Paste_Animation;
 }
 
