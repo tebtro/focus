@@ -74,6 +74,7 @@ draw_frame :: () {
         case .confirm_overwrite_dialog; draw_confirm_overwrite_dialog();
         case .commands_dialog;          draw_commands_dialog();
         case .theme_dialog;             draw_theme_dialog();
+        case .language_dialog;          draw_language_dialog();
     }
 
     draw_user_messages(screen, status_bar_height);
@@ -1998,6 +1999,29 @@ draw_open_file_dialog :: () {
     }
 }
 
+draw_language_dialog :: () {
+    draw_extra_entry_stuff :: (entry_ptr: *void, entry_rect: Rect, name_width: float, pen: Vector2, margin: float, padding: float) {
+        entry := cast(*Language_Dialog.Entry) entry_ptr;
+
+        if entry.active {
+            active_text :: "Current selected language";
+            active_rect := shrink_x(entry_rect, margin);
+
+            active_rect.x += name_width;
+            active_rect.w -= name_width + padding;
+
+            active_text_width := cast(float) Simp.prepare_text(font_ui_small, active_text);
+
+            if is_valid(active_rect) && active_text_width < active_rect.w {
+                x := active_rect.x + active_rect.w - active_text_width;
+                Simp.draw_prepared_text(font_ui_small, xx x, xx pen.y, color = xx Color.UI_DIM);
+            }
+        }
+    }
+
+    draw_generic_choice_dialog(*language_dialog, Ui_Id.language_dialog, " Choose language syntax", draw_extra_entry_stuff);
+}
+
 draw_commands_dialog :: () {
 
     draw_extra_entry_stuff :: (entry_ptr: *void, entry_rect: Rect, name_width: float, pen: Vector2, margin: float, padding: float) {
@@ -3420,7 +3444,7 @@ Icon :: enum u16 {
     jai          :: 0xf574;
     cpp          :: 0xf1c9;
     cs           :: 0xf1c9;
-    worklog      :: 0xf46d;
+    todo         :: 0xf46d;
     git          :: 0xf387;
     image        :: 0xf1c5;
     audio        :: 0xf1c7;
@@ -3466,6 +3490,7 @@ Ui_Id :: enum s64 {
     confirm_overwrite       :: -14;
     build_panel_title_bar   :: -15;
     theme_dialog            :: -16;
+    language_dialog         :: -17;
 
     // The rest will be derived from loc
 }

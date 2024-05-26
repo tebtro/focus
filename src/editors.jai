@@ -116,6 +116,8 @@ active_editor_handle_event :: (editor: *Editor, buffer: *Buffer, event: Input.Ev
             case .close_other_editor;               close_editor(.other);                                                               return true;
             case .close_left_editor;                if editors.active == editors.left  close_search_bar(editor); close_editor(.left);   return true;
             case .close_right_editor;               if editors.active == editors.right close_search_bar(editor); close_editor(.right);  return true;
+
+            case .choose_language;                  close_search_bar(editor); show_dialog(*language_dialog);                            return true;
         }
 
         if mode == .classic {
@@ -202,16 +204,19 @@ active_editor_handle_event :: (editor: *Editor, buffer: *Buffer, event: Input.Ev
         case .toggle_line_wrap;                 toggle_line_wrap                    (editor);
         case .toggle_line_numbers;              toggle_line_numbers                 ();
         case .copy_current_line_info;           copy_current_line_info              (editor, buffer);
-        case .delete_current_file;              show_delete_file_dialog(editor);
+        case .delete_current_file;              show_delete_file_dialog             (editor);
         case .center_viewport_on_cursor;        center_viewport_on_cursor           (editor, buffer);
         case .move_cursor_to_viewport_center;   move_cursor_to_viewport_center      (editor, buffer);
         case .remove_additional_cursors;        remove_additional_cursors           (editor);
         case .add_cursors_to_line_ends;         add_cursors_to_line_ends            (editor, buffer);
         case .add_cursors_to_line_starts;       add_cursors_to_line_starts          (editor, buffer);
-        case .swap_selections;                  swap_selections                     (editor, buffer);         keep_selection = true;
-        case .select_all;                       select_all                          (editor, buffer);         keep_selection = true;
-        case .create_cursor_above;              create_cursor                       (editor, buffer, .above); keep_selection = true;
-        case .create_cursor_below;              create_cursor                       (editor, buffer, .below); keep_selection = true;
+        case .swap_selections;                  swap_selections                     (editor, buffer);           keep_selection = true;
+        case .select_all;                       select_all                          (editor, buffer);           keep_selection = true;
+        case .create_cursor_above;              create_cursor                       (editor, buffer, .above);   keep_selection = true;
+        case .create_cursor_below;              create_cursor                       (editor, buffer, .below);   keep_selection = true;
+        case .strip_trailing_whitespace;        strip_trailing_whitespace           (buffer, editor.buffer_id); keep_selection = true;
+
+        case .choose_language;                  show_dialog                         (*language_dialog);
 
         // Actions that do something per cursor
         case .move_left;                        move_cursors_left                   (editor, buffer, by = .char,      shift_pressed);
@@ -1170,90 +1175,79 @@ init_buffers :: () {
     global_troubleshooting_buffer_id = -1;
 }
 
-get_lang_from_path :: (path: string) -> Buffer.Lang {
+get_lang_from_path :: (full_path: string) -> Buffer.Lang {
     lang: Buffer.Lang = .Plain_Text;
 
-    extension, found_extension := get_lowercase_extension(path, greedy = false);
-    if found_extension {
-        if extension == {
-            case "jai";            lang = .Jai;
-            case "cs";             lang = .CSharp;
-            case "focus-config";   lang = .Focus_Config;
-            case "focus-theme";    lang = .Focus_Theme;
-            case "go";             lang = .Golang;
+    path_, basename, extension, basename_with_extension := path_decomp(full_path);
 
-            case "ts";             #through;
-            case "tsx";            #through;
-            case "jsx";            #through;
-            case "js";             lang = .Js;
-
-            case "json";           lang = .Json;
-
-            case "lua";            lang = .Lua;
-            case "odin";           lang = .Odin;
-            case "py";             lang = .Python;
-            case "rpy";            lang = .RenPy;
-            case "rs";             lang = .Rust;
-
-            case "vert"; #through;
-            case "frag"; #through;
-            case "geom"; #through;
-            case "tese"; #through;
-            case "tesc"; #through;
-            case "glsl";
-                lang = .Glsl;
-
-            case "hlsl";  #through;
-            case "hlsli"; #through;
-            case "fx";    #through;
-            case "fxh";
-                lang = .Hlsl;
-
-            case "c";   #through;
-            case "h";   #through;
-            case "inl"; #through;
-            case "cpp"; #through;
-            case "cxx"; #through;
-            case "c++"; #through;
-            case "hpp"; #through;
-            case "ipp"; #through;
-            case "cc";  #through;
-            case "hh";  #through;
-            case "m";   #through;
-            case "mm";
-                lang = .C;
-
-            case "html"; #through;
-            case "htm";  #through;
-            case "xhtml";
-                lang = .Html;
-
-            case "xml";     #through;
-            case "xsd";     #through;
-            case "dtd";     #through;
-            case "xaml";    #through;
-            case "svg";     #through;
-            case "vcproj";  #through;
-            case "vcxproj"; #through;
-            case "csproj";
-                lang = .Xml;
-
-            case "yang";
-                lang = .Yang;
-
-            case "zig";
-                lang = .Zig;
-
-            case "tal";
-                lang = .Uxntal;
-        }
+    // Try to get lang from the user-provided mapping first
+    for config.workspace.file_associations {
+        if wildcard_match(basename_with_extension, it.wildcard) return it.lang;
     }
 
-    path_, basename, _, basename_with_extension := path_decomp(path);
+    // Get lang from the builtin mapping
+    lowercase_extension := to_lower_copy_new(extension,, temp);
+    if lowercase_extension == {
+        case "jai";             lang = .Jai;
+        case "cs";              lang = .CSharp;
+        case "focus-config";    lang = .Focus_Config;
+        case "focus-theme";     lang = .Focus_Theme;
+        case "go";              lang = .Golang;
+        case "lua";             lang = .Lua;
+        case "odin";            lang = .Odin;
+        case "py";              lang = .Python;
+        case "rpy";             lang = .RenPy;
+        case "rs";              lang = .Rust;
+        case "json";            lang = .Json;
+        case "yang";            lang = .Yang;
+        case "zig";             lang = .Zig;
+        case "tal";             lang = .Uxntal;
 
-    if equal_nocase(basename, "todo") || equal_nocase(basename_with_extension, "FOCUS-CHANGELOG.txt") {
-        lang = .Worklog;
+        case "ts";              lang = .Js;
+        case "tsx";             lang = .Js;
+        case "jsx";             lang = .Js;
+        case "js";              lang = .Js;
+
+        case "vert";            lang = .Glsl;
+        case "frag";            lang = .Glsl;
+        case "geom";            lang = .Glsl;
+        case "tese";            lang = .Glsl;
+        case "tesc";            lang = .Glsl;
+        case "glsl";            lang = .Glsl;
+
+        case "hlsl";            lang = .Hlsl;
+        case "hlsli";           lang = .Hlsl;
+        case "fx";              lang = .Hlsl;
+        case "fxh";             lang = .Hlsl;
+
+        case "c";               lang = .C;
+        case "h";               lang = .C;
+        case "inl";             lang = .C;
+        case "cpp";             lang = .C;
+        case "cxx";             lang = .C;
+        case "c++";             lang = .C;
+        case "hpp";             lang = .C;
+        case "ipp";             lang = .C;
+        case "cc";              lang = .C;
+        case "hh";              lang = .C;
+        case "m";               lang = .C;
+        case "mm";              lang = .C;
+
+        case "html";            lang = .Html;
+        case "htm";             lang = .Html;
+        case "xhtml";           lang = .Html;
+
+        case "xml";             lang = .Xml;
+        case "xsd";             lang = .Xml;
+        case "dtd";             lang = .Xml;
+        case "xaml";            lang = .Xml;
+        case "svg";             lang = .Xml;
+        case "vcproj";          lang = .Xml;
+        case "vcxproj";         lang = .Xml;
+        case "csproj";          lang = .Xml;
     }
+
+    if equal_nocase(basename_with_extension, "FOCUS-CHANGELOG.txt") then lang = .Todo;
 
     return lang;
 }
@@ -3079,6 +3073,7 @@ toggle_comment :: (editor: *Editor, buffer: *Buffer) {
         case .Python;       comment = "#";
         case .RenPy;        comment = "#";
         case .Yang;         comment = "//";
+        case .Rust;         comment = "//";
         case;               return;
     }
 
@@ -3246,6 +3241,7 @@ toggle_block_comment :: (editor: *Editor, buffer: *Buffer) {
         case .Js;           comment_start = "/*"; comment_end = "*/";
         case .Json;         comment_start = "/*"; comment_end = "*/";
         case .Odin;         comment_start = "/*"; comment_end = "*/";
+        case .Rust;         comment_start = "/*"; comment_end = "*/";
         case .Lua;          comment_start = "--[["; comment_end = "]]";
         case .Html;         comment_start = "<!--"; comment_end = "-->";
         case .Xml;          comment_start = "<!--"; comment_end = "-->";

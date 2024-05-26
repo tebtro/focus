@@ -277,6 +277,8 @@ ACTIONS_COMMON :: string.[
     "choose_theme",
     "edit_current_theme",
 
+    "choose_language",
+
     "open_projects_directory",
     "open_global_config",
     "open_project_config",
@@ -334,6 +336,7 @@ ACTIONS_COMMON :: string.[
     "increase_font_size",
     "decrease_font_size",
     "reset_font_size_to_default",
+    "strip_trailing_whitespace",
     "close_all_editors",
     "close_current_editor",
     "close_other_editors",

@@ -291,6 +291,7 @@ main :: () {
                 case .confirm_overwrite_dialog; handled = confirm_overwrite_dialog_handle_event(event);
                 case .commands_dialog;          handled = commands_dialog_handle_event(event);
                 case .theme_dialog;             handled = theme_dialog_handle_event(event);
+                case .language_dialog;          handled = language_dialog_handle_event(event);
             }
 
             if !handled {
@@ -697,11 +698,11 @@ dpi_scale := 1.0;
 fullscreen: bool;
 fullscreen_state: Saved_Window_Info;
 
-redraw_requested        := true;  // set to true to render the first frame
-should_quit             := false;
-force_quit              := false;
-should_reload_workspace := false;
-automatic_workspace_reload := false;
+redraw_requested            := true;  // set to true to render the first frame
+should_quit                 := false;
+force_quit                  := false;
+should_reload_workspace     := false;
+automatic_workspace_reload  := false;
 
 frame_time: Apollo_Time;          // ever-increasing time since start in seconds
 frame_dt:   Time = MAX_FRAME_DT;  // time delta since the last frame
@@ -822,6 +823,7 @@ Active_Global_Widget :: enum {
     unsaved_buffers_dialog;
     confirm_overwrite_dialog;
     theme_dialog;
+    language_dialog;
 }
 
 Project_Dir :: struct {
@@ -895,6 +897,7 @@ dont_ignore_next_window_resize := false;
 #load "widgets/open_project.jai";
 #load "widgets/confirm_overwrite.jai";
 #load "widgets/theme_dialog.jai";
+#load "widgets/language_dialog.jai";
 
 #load "langs/common.jai";
 #load "langs/jai.jai";
@@ -911,7 +914,7 @@ dont_ignore_next_window_resize := false;
 #load "langs/python.jai";
 #load "langs/renpy.jai";
 #load "langs/xml.jai";
-#load "langs/worklog.jai";
+#load "langs/todo.jai";
 #load "langs/yang.jai";
 #load "langs/zig.jai";
 #load "langs/uxntal.jai";

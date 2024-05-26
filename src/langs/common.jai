@@ -165,33 +165,114 @@ tokenize_c_like_lang_for_indentation :: (buffer: Buffer, $get_next_token: (*Toke
     return tokens;
 }
 
-get_lang_from_name :: (lang_name: string) -> Buffer.Lang {
-    if ends_with_nocase(lang_name, "jai")          return .Jai;
-    if ends_with_nocase(lang_name, "c")            return .C;
-    if ends_with_nocase(lang_name, "csharp")       return .CSharp;
-    // if ends_with_nocase(lang_name, "focus_config") return .Focus_Config;  // disabled for now
-    // if ends_with_nocase(lang_name, "focus_theme")  return .Focus_Theme;
-    if ends_with_nocase(lang_name, "glsl")         return .Glsl;
-    if ends_with_nocase(lang_name, "hlsl")         return .Hlsl;
-    if ends_with_nocase(lang_name, "golang")       return .Golang;
-    if ends_with_nocase(lang_name, "js")           return .Js;
-    if ends_with_nocase(lang_name, "jsx")          return .Js;
-    if ends_with_nocase(lang_name, "json")         return .Json;
-    if ends_with_nocase(lang_name, "ts")           return .Js;
-    if ends_with_nocase(lang_name, "tsx")          return .Js;
-    if ends_with_nocase(lang_name, "lua")          return .Lua;
-    if ends_with_nocase(lang_name, "odin")         return .Odin;
-    if ends_with_nocase(lang_name, "python")       return .Python;
-    if ends_with_nocase(lang_name, "renpy")        return .RenPy;
-    if ends_with_nocase(lang_name, "rust")         return .Rust;
-    if ends_with_nocase(lang_name, "html")         return .Html;
-    if ends_with_nocase(lang_name, "xml")          return .Xml;
-    if ends_with_nocase(lang_name, "worklog")      return .Worklog;
-    if ends_with_nocase(lang_name, "yang")         return .Yang;
-    if ends_with_nocase(lang_name, "zig")          return .Zig;
-    if ends_with_nocase(lang_name, "uxntal")       return .Uxntal;
+parse_number_c_like :: (using tokenizer: *Tokenizer, token: *$Token) {
+    token.type = .number;
 
-    return .Plain_Text;
+    start_char := t.*;
+
+    t += 1;
+    if t >= max_t return;
+
+    if is_digit(t.*) || t.* == #char "." {
+        // Decimal
+        seen_decimal_point := false;
+        while t < max_t && (is_digit(t.*) || t.* == #char ".") {
+            if t.* == #char "." {
+                if seen_decimal_point break;
+                seen_decimal_point = true;
+            }
+            t += 1;
+        }
+        if t >= max_t return;
+
+        // Exponent
+        if t.* == #char "e" || t.* == #char "E" {
+            t += 1;
+            if t >= max_t return;
+
+            if t.* == #char "+" || t.* == #char "-" {
+              t += 1;
+              if t >= max_t return;
+            }
+
+            while t < max_t && is_digit(t.*) {
+                t += 1;
+            }
+            if t >= max_t return;
+        }
+
+        // Suffixes
+        if seen_decimal_point {
+            if t.* == #char "f" || t.* == #char "F" || t.* == #char "d" || t.* == #char "D" {
+                t += 1;
+            }
+        } else {
+            if t.* == #char "l" || t.* == #char "L" {             // l
+                t += 1;
+                if t >= max_t return;
+
+                if t.* == #char "l" || t.* == #char "L" {         // ll
+                    t += 1;
+                    if t >= max_t return;
+
+                    if t.* == #char "u" || t.* == #char "U" {     // llu
+                    t += 1;
+                }
+            } else if t.* == #char "u" || t.* == #char "U" {      // lu
+                t += 1;
+            }
+            } else if  t.* == #char "u" || t.* == #char "U" {     // u
+                t += 1;
+            }
+        }
+    } else if start_char == #char "0" {
+        if t.* == #char "x" || t.* == #char "X" {
+            // Hex
+            t += 1;
+            while t < max_t && (is_hex(t.*)) t += 1;
+
+        } else if t.* == #char "b" || t.* == #char "B" {
+            // Binary
+            t += 1;
+            while t < max_t && (t.* == #char "1" || t.* == #char "0") t += 1;
+        }
+    }
+}
+
+get_lang_from_name :: (lang_name: string) -> Buffer.Lang, found: bool {
+    lowercase_name := to_lower_copy_new(lang_name,, temp);
+    if lowercase_name == {
+        case "jai";          return .Jai,        true;
+        case "c";            return .C,          true;
+        case "cpp";          return .C,          true;
+        case "csharp";       return .CSharp,     true;
+        case "glsl";         return .Glsl,       true;
+        case "hlsl";         return .Hlsl,       true;
+        case "go";           return .Golang,     true;
+        case "golang";       return .Golang,     true;
+        case "js";           return .Js,         true;
+        case "jsx";          return .Js,         true;
+        case "json";         return .Json,       true;
+        case "ts";           return .Js,         true;
+        case "tsx";          return .Js,         true;
+        case "lua";          return .Lua,        true;
+        case "odin";         return .Odin,       true;
+        case "python";       return .Python,     true;
+        case "renpy";        return .RenPy,      true;
+        case "rust";         return .Rust,       true;
+        case "html";         return .Html,       true;
+        case "xml";          return .Xml,        true;
+        case "todo";         return .Todo,       true;
+        case "yang";         return .Yang,       true;
+        case "zig";          return .Zig,        true;
+        case "uxntal";       return .Uxntal,     true;
+        case "plain_text";   return .Plain_Text, true;
+
+        // case "focus_config"; return .Focus_Config, true;  // disabled for now
+        // case "focus_theme";  return .Focus_Theme,  true;
+    }
+
+    return .Plain_Text, false;
 }
 
 Tokenizer :: struct {
