@@ -115,7 +115,7 @@ get_char_at_offset_as_string :: (using buffer: Buffer, offset: s32) -> string {
     if offset >= bytes.count return "";
     char: string = ---;
     char.data  = *bytes[offset];
-    char.count = 1 + trailingBytesForUTF8[bytes[offset]];
+    char.count = clamp(cast(s64)(1 + trailingBytesForUTF8[bytes[offset]]), 0, bytes.count - offset);
     return char;
 }
 
@@ -476,6 +476,7 @@ tokenize_for_indentation :: (buffer: *Buffer) -> [] Indentation_Token /* temp */
         case .Jai;          return tokenize_jai_for_indentation(buffer);
         case .CSharp;       return tokenize_csharp_for_indentation(buffer);
         case .C;            return tokenize_c_like_lang_for_indentation(buffer, get_next_c_token);
+        case .Cpp;          return tokenize_c_like_lang_for_indentation(buffer, get_next_cpp_token);
         case .Js;           return tokenize_c_like_lang_for_indentation(buffer, get_next_js_token);
         case .Json;         return tokenize_c_like_lang_for_indentation(buffer, get_next_json_token);
         case .Glsl;         return tokenize_c_like_lang_for_indentation(buffer, get_next_glsl_token);
@@ -1187,6 +1188,7 @@ get_tokenize_function :: (lang: Buffer.Lang) -> Tokenize_Function {
     if #complete lang == {
         case .Jai;                  return tokenize_jai;
         case .C;                    return tokenize_c;
+        case .Cpp;                  return tokenize_cpp;
         case .CSharp;               return tokenize_csharp;
         case .Glsl;                 return tokenize_glsl;
         case .Hlsl;                 return tokenize_hlsl;
@@ -1204,6 +1206,7 @@ get_tokenize_function :: (lang: Buffer.Lang) -> Tokenize_Function {
         case .Yang;                 return tokenize_yang;
         case .Zig;                  return tokenize_zig;
         case .Uxntal;               return tokenize_uxntal;
+        case .Markdown;             return tokenize_markdown;
         case .Focus_Config;         return tokenize_focus_config;
         case .Focus_Theme;          return tokenize_focus_config;
         case .Focus_Build_Panel;    return null;
@@ -1387,6 +1390,7 @@ Buffer :: struct {
         Plain_Text :: 0;
         Jai;
         C;
+        Cpp;
         CSharp;
         Glsl;
         Hlsl;
@@ -1404,6 +1408,7 @@ Buffer :: struct {
         Yang;
         Zig;
         Uxntal;
+        Markdown;
         Focus_Config;
         Focus_Theme;
         Focus_Build_Panel;  // a fake lang to be assigned to the build panel instead of Plain_Text so that its tokens are preserved

@@ -6,9 +6,14 @@ platform_setup :: inline () {
 }
 
 platform_data_dir :: () -> string {
-    application_support := NSFileManager.URLForDirectory(NSFileManager.defaultManager(), NSApplicationSupportDirectory, NSUserDomainMask, null, YES, null);
-    config_dir := sprint("%/dev.focus-editor", to_string(NSURL.path(application_support)));
+    application_support := to_string(NSURL.path(NSFileManager.URLForDirectory(NSFileManager.defaultManager(), NSApplicationSupportDirectory, NSUserDomainMask, null, YES, null)));
+
+    config_dir := sprint("%/dev.focus-editor", application_support);
+    #if DEBUG {
+        config_dir = sprint("%/dev.focus-editor/debug", application_support);
+    }
     make_directory_if_it_does_not_exist(config_dir);
+
     return config_dir;
 }
 
