@@ -353,9 +353,9 @@ active_editor_type_char :: (char: u32) {
     offset_delta: s32 = 0;
     buf_len := cast(s32) buffer.bytes.count;
 
-    should_surround_selection     := config.settings.auto_surround_with_brackets_and_quotes && all_cursors_have_selection(editor) && is_balanceable_char(char);
-    should_insert_closing_bracket := config.settings.auto_close_brackets && all_cursors_can_auto_insert_closing_bracket(editor, buffer) && is_auto_closeable_char(char);
-    should_skip_closing_bracket   := config.settings.auto_skip_closing_brackets && all_cursors_can_auto_skip_closing_bracket(editor, buffer) && is_auto_skippable_char(char);
+    should_surround_selection     := config.settings.auto_surround_with_brackets_and_quotes && is_balanceable_char(char)    && all_cursors_have_selection(editor);
+    should_insert_closing_bracket := config.settings.auto_close_brackets                    && is_auto_closeable_char(char) && all_cursors_can_auto_insert_closing_bracket(editor, buffer);
+    should_skip_closing_bracket   := config.settings.auto_skip_closing_brackets             && is_auto_skippable_char(char) && all_cursors_can_auto_skip_closing_bracket(editor, buffer, char);
 
     for * cursor : editor.cursors {
         new_len := cast(s32) buffer.bytes.count;
@@ -773,12 +773,10 @@ all_cursors_can_auto_insert_closing_bracket :: (using editor: Editor, buffer: Bu
     return true;
 }
 
-all_cursors_can_auto_skip_closing_bracket :: (using editor: Editor, buffer: Buffer) -> bool {
+all_cursors_can_auto_skip_closing_bracket :: (using editor: Editor, buffer: Buffer, ch: u32) -> bool {
     for editor.cursors {
         if has_selection(it)  return false;
-        ch := get_char_at_offset(buffer, it.pos);
-
-        if !is_auto_skippable_char(ch) {
+        if ch != get_char_at_offset(buffer, it.pos) {
             return false;
         }
     }
