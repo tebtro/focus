@@ -29,6 +29,8 @@
     + New config subsection under `[[workspace]]`: `[file associations]`. Can be used to assign syntax to buffers using wildcards. See the default config for examples
     + Basic highlighting for Markdown (thanks @jakwolf) - however it's not complete and not always correct
     + C and C++ highlighters are now separate from each other
+    + Workspace changes:
+        + Workspace will now reload in a non-destructive way. Wherever possible it will try to preserve open editors unless they don't belong to the workspace any more
 + Bug fixes:
     + Linux: Fixed a bug that caused inconsistent trackpad scrolling on Wayland (thanks @Mythique)
     + Rust: enabled comment toggling that was missing initially
@@ -36,6 +38,7 @@
     + Fixed an out-of-bounds scroll position in scrollable panels in some cases
     + Fixed a crash when parsing build output with certain regexes
     + Fixed a crash when outputting invalid UTF-8 in build commands
+    + Fixed a glitch with changing scroll position in some cases (thanks @Sanian-Creations)
 + Other changes:
     + macOS: add support for dead keys/key composition
     + ...
