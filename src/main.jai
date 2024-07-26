@@ -229,6 +229,10 @@ main :: () {
         // If we handle it as a keyboard event we will need to ignore its text input duplicates
         num_text_input_events_to_ignore := 0;
 
+        if Input.events_this_frame.count > 0 {
+            on_event(*dynamic_fps_state);
+        }
+
         for event : Input.events_this_frame {
             if should_quit break;  // don't process any other events we might have in this frame if the previous one set this to true
 
@@ -346,10 +350,8 @@ main :: () {
 
         // #if DEBUG FrameMark();
 
-        if cast(Time) to_float64_seconds(current_time_monotonic() - frame_time) <= QUICK_FRAME_DT {
-            // It should be ok to sleep a bit after a quick frame to avoid pegging the core.
-            sleep_milliseconds(2);
-        }
+        sleep_duration := get_sleep_duration(*dynamic_fps_state);
+        sleep_milliseconds(sleep_duration);
     }
 
     #if DEBUG_MEMORY_LEAKS {
@@ -713,8 +715,8 @@ automatic_workspace_reload  := false;
 
 frame_time: Apollo_Time;          // ever-increasing time since start in seconds
 frame_dt:   Time = MAX_FRAME_DT;  // time delta since the last frame
-MAX_FRAME_DT:   Time : xx (1.0 / 60);
-QUICK_FRAME_DT: Time : xx (1.0 / 300);  // sorry 300Hz monitor users
+MAX_FRAME_DT:   Time : xx (1.0 / 30);
+QUICK_FRAME_DT: Time : xx (1.0 / 500);  // sorry 300Hz monitor users
 // MAX_TIME_BEFORE_RESETTING: Time : xx (60 * 60 * 24 * 7);  // reset timer after a week to avoid losing timer precision
 
 EDIT_GROUP_TIMEOUT :: 0.3;  // for undo/redo
@@ -928,6 +930,8 @@ dont_ignore_next_window_resize := false;
 #load "langs/uxntal.jai";
 #load "langs/rust.jai";
 #load "langs/markdown.jai";
+
+#load "custom/dynamic_fps.jai";
 
 #if OS == .WINDOWS {
     #load "platform/windows.jai";
