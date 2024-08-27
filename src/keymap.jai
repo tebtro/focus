@@ -275,7 +275,7 @@ ACTIONS_COMMON :: string.[
     "open_another_editor_instance",
 
     "open_project",
-    "switch_to_project",  // alias of open_project
+    "switch_to_project",
     "close_project",
 
     "choose_theme",
@@ -330,6 +330,7 @@ ACTIONS_COMMON :: string.[
     "jump_to_line_end",
     "jump_to_file_start",
     "jump_to_file_end",
+    "jump_to_matching_bracket",
     "delete_left_char",
     "delete_right_char",
     "delete_word_left",

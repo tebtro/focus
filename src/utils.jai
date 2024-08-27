@@ -57,37 +57,22 @@ to_owned_array :: (array: *[..]$T, free_memory := false) -> []T {
     return new_array;
 }
 
-pos_to_offset :: (str: string, pos: s64) -> s64 {
-    assert(pos >= 0, "Negative char position\n");
-    result     := -1;
-    char_index := 0;
-    offset     := 0;
+visual_col_to_byte_offset :: (str: string, target_col: s64, line_indent: s64) -> offset: s64, new_col: s64 {
+    s := str;
+    col := 0;
 
-    while offset < str.count {
-        if pos == char_index {
-            result = offset;
-            break;
+    while s && col < target_col {
+        byte := s[0];
+        if byte != #char "\t" {
+            safe_advance(*s, 1 + trailingBytesForUTF8[byte]);
+            col += 1;
+        } else {
+            safe_advance(*s, 1);
+            col += TAB_SIZE - (col + line_indent) % TAB_SIZE;
         }
-        byte := str.data[offset];
-        offset += 1 + trailingBytesForUTF8[byte];
-        char_index += 1;
     }
 
-    if pos == char_index then result = clamp(offset, 0, str.count);
-    assert(result >= 0, "Char position outside string\n");
-
-    return result;
-}
-
-// Slices the string using char indices, not byte indices
-slice_chars :: (str: string, pos1: s32, pos2: s32) -> string {
-    if pos2 <= pos1 || !str return "";
-
-    offset1 := pos_to_offset(str, pos1);
-    remaining_str := slice(str, offset1, str.count - offset1);
-    offset2 := offset1 + pos_to_offset(remaining_str, pos2 - pos1);
-
-    return slice(str, offset1, offset2 - offset1);
+    return (s.data - str.data), col;
 }
 
 advance_to_next_line :: inline (s: *string) {
@@ -329,14 +314,21 @@ is_auto_skippable_char :: (ch: u32) -> bool {
     return ch == #char "}" || ch == #char ")" || ch == #char "]" || ch == #char "\"";
 }
 
-get_balancing_char :: (ch: u32) -> u32 {
+get_balancing_char :: (ch: u32, include_closing := false) -> u32 {
     if ch == {
         case #char "{";  return #char "}";
         case #char "(";  return #char ")";
         case #char "[";  return #char "]";
         case #char "\""; return #char "\"";
-        case; return 0;
     }
+    if include_closing {
+        if ch == {
+            case #char "}";  return #char "{";
+            case #char ")";  return #char "(";
+            case #char "]";  return #char "[";
+        }
+    }
+    return 0;
 }
 
 get_char_type :: (ch: u32) -> Char_Type {
@@ -539,4 +531,103 @@ Fuzzy_Filter :: struct {
         str: string;
         chars: [] string;
     }
+}
+
+rgb_from_hsl :: (hsl: Vector3) -> Vector3 {
+    h := hsl.x;
+    s := hsl.y;
+    l := hsl.z;
+    r, g, b: float;
+
+    if s == 0 {
+        r, g, b = l, l, l; // achromatic
+    }
+    else {
+        rgb_from_hue :: (p: float, q: float, t: float) -> float {
+            if t < 0  t += 1;
+            if t > 1  t -= 1;
+            if t < 1.0/6.0  return p + (q - p) * 6 * t;
+            if t < 1.0/2.0  return q;
+            if t < 2.0/3.0  return p + (q - p) * (2.0/3.0 - t) * 6;
+            return p;
+        }
+
+        q := ifx l < 0.5 then l * (1 + s) else l + s - l * s;
+        p := 2 * l - q;
+        r = rgb_from_hue(p, q, h + 1.0/3.0);
+        g = rgb_from_hue(p, q, h);
+        b = rgb_from_hue(p, q, h - 1.0/3.0);
+    }
+
+    return .{r, g, b};
+}
+
+hsl_from_rgb :: (color: Vector3) -> hsl: Vector3 {
+    r := color.x;
+    g := color.y;
+    b := color.z;
+    h, s, l: float;
+
+    _min := min(min(r, g), b);
+    _max := max(max(r, g), b);
+
+    c := _max - _min;
+    l = (_min + _max) / 2;
+
+    if c < 0.00001 || _max <= 0.0 return .{h, s, l};
+
+    s = ifx l >= 0.5
+        then c / (2 - _max - _min)
+        else c / (_max + _min);
+
+    if      _max == r  h = (g - b) / c + (ifx g < b then 6 else 0);
+    else if _max == g  h = (b - r) / c + 2;
+    else               h = (r - g) / c + 4;
+
+    h /= 6.0;
+    if h < 0.0  h += 1.0;
+
+    return .{h, s, l};
+}
+
+color_to_hex :: (using color: Vector4, exclude_hash := false) -> string /* temp */ {
+    r_u8 := cast(u8)(255 * x);
+    g_u8 := cast(u8)(255 * y);
+    b_u8 := cast(u8)(255 * z);
+    a_u8 := cast(u8)(255 * w);
+
+    h :: #bake_arguments formatInt(base=16, minimum_digits=2);
+    format := "#%1%2%3%4";
+    if exclude_hash advance(*format, 1);
+
+    return tprint(format, h(r_u8), h(g_u8), h(b_u8), h(a_u8));
+}
+
+hex_to_color_vec4 :: (src_hex: string) -> Vector4, success: bool {
+    hex := src_hex;
+    if hex.count == 6 then hex = tprint("%FF", hex);
+    if hex.count != 8 return Vector4.{}, false;
+
+    r := slice(hex, 0, 2);
+    g := slice(hex, 2, 2);
+    b := slice(hex, 4, 2);
+    a := slice(hex, 6, 2);
+
+    to_float :: (byte_str: string) -> float {
+        hex_digit_to_int :: (char: u8) -> int {
+            char = to_upper(char);
+            if #char "0" <= char && char <= #char "9" return char - #char "0";
+            if #char "A" <= char && char <= #char "F" return 10 + char - #char "A";
+            return -1;
+        }
+
+        d1, d0 := cast(float)hex_digit_to_int(byte_str[0]), cast(float) hex_digit_to_int(byte_str[1]);
+        if d1 < 0 || d0 < 0 return -1;
+
+        return (16 * d1 + d0) / 255;
+    }
+
+    c := Vector4.{ to_float(r), to_float(g), to_float(b), to_float(a) };
+
+    return c, c.x >= 0 && c.y >= 0 && c.z >= 0 && c.w >= 0;
 }

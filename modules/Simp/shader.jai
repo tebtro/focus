@@ -50,8 +50,23 @@ set_shader_for_rects :: () {
     }
 }
 
+
+set_shader_for_gradient :: (rect: Vector4, mode: u8, value: float) {
+    CheckInit();
+    immediate_set_shader(*shader_gradient);
+    set_projection();
+    loc := get_uniform_location(shader_gradient.gl_handle, "rect");
+    glUniform4f(loc, rect.x, rect.y, rect.z, rect.w);
+    loc = get_uniform_location(shader_gradient.gl_handle, "mode");
+    glUniform1i(loc, mode);
+    loc = get_uniform_location(shader_gradient.gl_handle, "value");
+    glUniform1f(loc, value);
+}
+
+
 shader_sprite: Shader;
 shader_text:   Shader;
 shader_color:  Shader;
 shader_color_with_blend:  Shader;
 shader_rounded_rect:      Shader;
+shader_gradient: Shader;

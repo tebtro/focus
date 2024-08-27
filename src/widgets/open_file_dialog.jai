@@ -299,11 +299,7 @@ refresh_entries :: (clear_input := true) {
 
     maybe_add_a_buffer_entry :: (buffer: Buffer, buffer_id: s64) #expand {
         // @MEMORY SAFETY: if we ever delete buffers from open_buffers and free memory, this will have to copy everything!
-        if buffer.deleted && !buffer.modified continue;  // NOTE: we might still want to see externally deleted buffers.
-                                                         // Maybe use 'deleted' and 'modified_on_disk' to distingiush the buffers
-                                                         // we haven't deleted ourselves?
-                                                         // Alternatively, if there's an editor for a deleted buffer we probably
-                                                         // still want to see it here
+        if (buffer.deleted && !buffer.modified) || buffer.internal continue;
 
         buffer_name := get_buffer_name(buffer);
         name_score, name_highlights, exact_match := fuzzy_match(buffer_name,      filter);
@@ -353,6 +349,27 @@ refresh_entries :: (clear_input := true) {
                     entry.path = it.path;
                     entry.icon = .folder;
                     entry.project_dir_id = xx (it_index + 1);
+                    entry.name_highlights = name_highlights;
+                    entry.path_highlights = NewArray(entry.path.count, bool);
+
+                    dir_id_part: u64 = (cast,trunc(u64) (127 - entry.project_dir_id)) << 56;
+                    score_part:  u64 = (cast,trunc(u64) score)                        << 16;
+                    entry.sort_key = dir_id_part | score_part;
+                }
+                for project_files {
+                    path, _, extension, name := path_decomp(it);
+                    score, name_highlights := fuzzy_match(name, filter);
+                    if score <= 0 && filter.full_string continue;
+                    if filter.full_string then score -= xx name.count;  // prefer shorter name all other things being equal
+
+                    entry := array_add(*entries.filtered);
+                    entry.type = .file;
+                    entry.full_path = it;
+                    entry.name = name;
+                    entry.entry_name = name;
+                    entry.path = trim_right(path, "/");
+                    entry.icon = get_file_icon(name, extension);
+                    entry.project_dir_id = xx (it_index + 1 + project_dirs.count);
                     entry.name_highlights = name_highlights;
                     entry.path_highlights = NewArray(entry.path.count, bool);
 
@@ -456,7 +473,12 @@ get_current_folder_path :: () -> string {
         path_chunks_trimmed := array_view(path_chunks, 1, path_chunks.count - 1);
         dir_path = sprint("%/%", root_dir, join(..path_chunks_trimmed, separator = "/"));
     } else {
-        dir_path = join(..path_chunks, separator = "/");
+        if path_chunks[0] == "/" {
+            path_chunks_trimmed := array_view(path_chunks, 1, path_chunks.count - 1);
+            dir_path = sprint("/%", join(..path_chunks_trimmed, separator = "/"));
+        } else {
+            dir_path = join(..path_chunks, separator = "/");
+        }
     }
     while dir_path != "/" && ends_with(dir_path, #char "/") dir_path.count -= 1;
 
@@ -475,9 +497,9 @@ scan_current_folder :: () {
     visitor_func :: (file: *File_Visit_Info, userdata: *void) {
         if file.had_error || file.is_symlink return;
         if file.is_directory {
-            if should_ignore_dir(file.full_name) return;
+            if !should_descend_into_dir(file.full_name) return;
         } else {
-            if should_ignore_file(file.full_name) return;
+            if should_ignore_path(file.full_name) return;
         }
 
         full_path := copy_string(file.full_name);  // one allocation in the pool, the rest are views into it

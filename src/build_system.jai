@@ -5,7 +5,7 @@ init_build_system :: () {
     build_editor_id = find_or_create_editor(build_buffer_id);
     editor, buffer := *open_editors[build_editor_id], *open_buffers[build_buffer_id];
     buffer.readonly = true;
-    buffer.deleted  = true;  // so that it doesn't appear in the open file dialog
+    buffer.internal = true;
     buffer.lang = .Focus_Build_Panel;
     if config.settings.build_panel_line_wrap_always_on then editor.line_wrap = .on; else editor.line_wrap = .off;
 
@@ -48,26 +48,18 @@ execute_build_command :: (command: *Build_Command) {
 
     clear_user_messages(.build);
 
-    // Validate command
+    // Prepare and validate command
     {
         using command;
-        if build_working_dir {
-            if contains(build_working_dir, "\\") {
-                build_working_dir = copy_string(build_working_dir);  // @leak
-                path_overwrite_separators(build_working_dir, #char "/");
-                build_working_dir = trim_right(build_working_dir, "/");
-            }
-            is_dir, success := is_directory(build_working_dir);
-            if !is_dir || !success then add_user_warning("Build directory '%' doesn't seem to be a valid directory", build_working_dir);
+        if build_working_dir && contains(build_working_dir, "\\") {
+            build_working_dir = copy_string(build_working_dir);  // @leak
+            path_overwrite_separators(build_working_dir, #char "/");
+            build_working_dir = trim_right(build_working_dir, "/");
         }
-        if run_working_dir {
-            if contains(run_working_dir, "\\") {
-                run_working_dir = copy_string(run_working_dir);  // @leak
-                path_overwrite_separators(run_working_dir, #char "/");
-                run_working_dir = trim_right(run_working_dir, "/");
-            }
-            is_dir, success := is_directory(run_working_dir);
-            if !is_dir || !success then add_user_warning("Run directory '%' doesn't seem to be a valid directory", run_working_dir);
+        if run_working_dir && contains(run_working_dir, "\\") {
+            run_working_dir = copy_string(run_working_dir);  // @leak
+            path_overwrite_separators(run_working_dir, #char "/");
+            run_working_dir = trim_right(run_working_dir, "/");
         }
         if !build_command && !run_command {
             add_user_error("Can't run [%]:\nbuild_command or run_command must be specified in the config", name);
@@ -100,6 +92,8 @@ execute_build_command :: (command: *Build_Command) {
     work.error_regex       = copy_string(command.error_regex);
 
     if command.substitute_variables then substitute_variables(work);
+
+    check_working_dirs(work);
 
     // We never want a timeout of 0 seconds because the command will never run.
     // People probably expect 0 to be no timeout, so we convert it to -1, which means no timeout
@@ -194,7 +188,11 @@ build_system_update :: () {
                 case .FAILED_TO_LAUNCH;
                     command := ifx last_command_result.run.finished then finished_command.run_command else finished_command.build_command;
                     message = tprint("ERROR: couldn't launch '%'", command);
-                    if !is_absolute_path(command) then message = tprint("%. Try specifying a full path to the executable.", message);
+                    if is_common_windows_shell_command(command) {
+                        message = tprint("%.\nLooks like you're trying to execute a shell command. Try doing 'cmd /C \"%\"' to launch a shell explicitly.", message, command);
+                    } else if !is_absolute_path(command) {
+                        message = tprint("%. Try specifying a full path to the executable.", message);
+                    }
                     kind = .error;
                 case .STILL_RUNNING;
                     message = "ERROR: the command is still running. This is a bug.";
@@ -262,7 +260,7 @@ show_build_panel :: () {
         case .delete_file_dialog;       #through;
         case .finder;                   #through;
         case .go_to_line_dialog;        #through;
-        case .open_project_dialog;      #through;
+        case .switch_to_project_dialog; #through;
         case .theme_dialog;             #through;
         case .language_dialog;          #through;
         case .commands_dialog;          active_global_widget = .editors;
@@ -511,10 +509,7 @@ print_to_output_panel_from_main_thread :: (s: string, mark_as: Buffer_Region.Kin
             region.end   -= bytes_to_forget;
             if region.start < 0 || region.end < 0 then remove region;  // will have to sort later because they must be sorted
         }
-        compare_regions :: (r1: Buffer_Region, r2: Buffer_Region) -> s64 {
-            return r1.start - r2.start;
-        }
-        quick_sort(buffer.regions, compare_regions);
+        quick_sort(buffer.regions, (a, b) => (a.start - b.start));
     }
 }
 
@@ -536,7 +531,7 @@ substitute_variables :: (using work: *Build_Thread_Work) {
     file_vars_are_used := false;
     file_vars := string.["%FILE%", "%FILE_DIR%", "%FILE_NAME%", "%FILE_NAME_NO_EXTENSION%"];
     for file_vars {
-        if contains(build_command, it) || contains(run_command, it) {
+        if contains(build_command, it) || contains(run_command, it) || contains(build_working_dir, it) || contains(run_working_dir, it) {
             file_vars_are_used = true;
             break;
         }
@@ -547,15 +542,38 @@ substitute_variables :: (using work: *Build_Thread_Work) {
         file_dir, file_name_no_extension, _, file_name := path_decomp(file);
         file_dir = trim_right(file_dir, "/");
 
-        build_command = replace(build_command, "%FILE%",                   file);
-        build_command = replace(build_command, "%FILE_DIR%",               file_dir);
-        build_command = replace(build_command, "%FILE_NAME%",              file_name);
-        build_command = replace(build_command, "%FILE_NAME_NO_EXTENSION%", file_name_no_extension);
+        build_working_dir = replace(build_working_dir, "%FILE%",                   file);
+        build_working_dir = replace(build_working_dir, "%FILE_DIR%",               file_dir);
+        build_working_dir = replace(build_working_dir, "%FILE_NAME%",              file_name);
+        build_working_dir = replace(build_working_dir, "%FILE_NAME_NO_EXTENSION%", file_name_no_extension);
 
-        run_command   = replace(run_command,   "%FILE%",                   file);
-        run_command   = replace(run_command,   "%FILE_DIR%",               file_dir);
-        run_command   = replace(run_command,   "%FILE_NAME%",              file_name);
-        run_command   = replace(run_command,   "%FILE_NAME_NO_EXTENSION%", file_name_no_extension);
+        run_working_dir   = replace(run_working_dir,   "%FILE%",                   file);
+        run_working_dir   = replace(run_working_dir,   "%FILE_DIR%",               file_dir);
+        run_working_dir   = replace(run_working_dir,   "%FILE_NAME%",              file_name);
+        run_working_dir   = replace(run_working_dir,   "%FILE_NAME_NO_EXTENSION%", file_name_no_extension);
+
+        build_command     = replace(build_command,     "%FILE%",                   file);
+        build_command     = replace(build_command,     "%FILE_DIR%",               file_dir);
+        build_command     = replace(build_command,     "%FILE_NAME%",              file_name);
+        build_command     = replace(build_command,     "%FILE_NAME_NO_EXTENSION%", file_name_no_extension);
+
+        run_command       = replace(run_command,       "%FILE%",                   file);
+        run_command       = replace(run_command,       "%FILE_DIR%",               file_dir);
+        run_command       = replace(run_command,       "%FILE_NAME%",              file_name);
+        run_command       = replace(run_command,       "%FILE_NAME_NO_EXTENSION%", file_name_no_extension);
+    }
+
+    // Replace %PROJECT_CONFIG_DIR% if used
+    if contains(build_command, "%PROJECT_CONFIG_DIR%") || contains(run_command, "%PROJECT_CONFIG_DIR%") || contains(build_working_dir, "%PROJECT_CONFIG_DIR%") || contains(run_working_dir, "%PROJECT_CONFIG_DIR%") {
+        project_dir := get_current_project_dir();
+        if project_dir {
+            build_working_dir = replace(build_working_dir, "%PROJECT_CONFIG_DIR%", project_dir);
+            run_working_dir   = replace(run_working_dir,   "%PROJECT_CONFIG_DIR%", project_dir);
+            build_command     = replace(build_command,     "%PROJECT_CONFIG_DIR%", project_dir);
+            run_command       = replace(run_command,       "%PROJECT_CONFIG_DIR%", project_dir);
+        } else {
+            add_user_warning("Variable '%PROJECT_CONFIG_DIR%' is used in the build command, but there is no active project", dismiss_in_seconds = 10);
+        }
     }
 
     build_command = replace(build_command, "%BUILD_WORKING_DIR%", build_working_dir);
@@ -563,6 +581,31 @@ substitute_variables :: (using work: *Build_Thread_Work) {
 
     run_command   = replace(run_command,   "%BUILD_WORKING_DIR%", build_working_dir);
     run_command   = replace(run_command,   "%RUN_WORKING_DIR%",   run_working_dir);
+}
+
+is_common_windows_shell_command :: (command: string) -> bool {
+    #if OS == .WINDOWS {
+        COMMON_CMD_COMMANDS :: string.[
+            "echo ", "call ", "copy", "cd ", "chdir ", "del ", "rd ", "rmdir ", "md ", "mkdir ", "path ", "xcopy ", "move ", "ren ", "rename ",
+        ];
+        for COMMON_CMD_COMMANDS {
+            if begins_with_nocase(command, it) return true;
+        }
+        return false;
+    } else {
+        return false;
+    }
+}
+
+check_working_dirs :: (using work: *Build_Thread_Work) {
+    if build_working_dir {
+        is_dir, success := is_directory(build_working_dir);
+        if !is_dir || !success then add_user_warning("Build directory '%' doesn't seem to be a valid directory", build_working_dir);
+    }
+    if run_working_dir {
+        is_dir, success := is_directory(run_working_dir);
+        if !is_dir || !success then add_user_warning("Run directory '%' doesn't seem to be a valid directory", run_working_dir);
+    }
 }
 
 parse_build_errors :: (error_regex: string) {
