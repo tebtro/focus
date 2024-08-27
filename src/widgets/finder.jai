@@ -27,7 +27,7 @@ finder_handle_event :: (event: Input.Event) -> handled: bool {
         handled := text_input_handle_event(*input, event);
         if handled { start_new_search(); return true; }
 
-        action, mapping := map_event_to_action(event, Action_Search_Dialog);
+        action, mapping := map_event_to_action(event, .DEFAULT, Action_Search_Dialog);
         if action == {
             case .toggle_expand;            toggle_expand();                                        return true;
             case .toggle_case_sensitive;    finder_toggle_case_sensitive();                         return true;

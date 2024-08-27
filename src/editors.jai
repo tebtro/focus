@@ -6,17 +6,21 @@ editors_handle_event :: (event: Input.Event) -> handled: bool {
     if event.type == {
         case .KEYBOARD;
             if event.key_pressed {
-                action, mapping := map_event_to_action(event, Action_Editors);
-                if active_hold_actions && !is_hold_action(action) return true;  // don't execute any non-hold actions while hold actions are active
-
                 editor, buffer := get_active_editor_and_buffer();
                 if editor {
+                    action, mapping := map_event_to_action(event, editor.vim_mode, Action_Editors);
+                    if active_hold_actions && !is_hold_action(action) return true;  // don't execute any non-hold actions while hold actions are active
+
                     return active_editor_handle_event(editor, buffer, event, action);
                 } else {
+                    action, mapping := map_event_to_action(event, .DEFAULT, Action_Editors);
+                    if active_hold_actions && !is_hold_action(action) return true;  // don't execute any non-hold actions while hold actions are active
+
                     if action == {
                         case .escape;           #through;
                         case .close_dialog;     hide_build_panel();     return true;
                     }
+
                     return false;
                 }
             } else {
@@ -89,13 +93,13 @@ active_editor_handle_event :: (editor: *Editor, buffer: *Buffer, event: Input.Ev
         }
 
         // Handle editor actions which make sense while the search bar is open
-        editor_action := map_event_to_action(event, Action_Editors);
+        editor_action := map_event_to_action(event, editor.vim_mode, Action_Editors);
         if editor_action == {
             case .select_all_occurrences;           select_all_occurrences(editor, buffer, cast(string) input.text); close_search_bar(editor); return true;
         }
 
         // Handle search dialog actions
-        action := map_event_to_action(event, Action_Search_Dialog);
+        action := map_event_to_action(event, editor.vim_mode, Action_Search_Dialog);
         if action == {
             case .toggle_expand;                    search_bar_toggle_expand(editor);                                                   return true;
             case .toggle_case_sensitive;            search_bar_toggle_case_sensitive(editor, buffer);                                   return true;
@@ -241,6 +245,30 @@ active_editor_handle_event :: (editor: *Editor, buffer: *Buffer, event: Input.Ev
         case .select_line;                      select_lines                        (editor, buffer); keep_selection = true;
         case .copy;                             copy_selection_to_clipboard         (editor, buffer);
 
+        // Vim actions
+        case .vim_enter_mode_default;               vim_enter_mode(editor, .DEFAULT);
+        case .vim_enter_mode_normal;                vim_enter_mode(editor, .NORMAL);
+        case .vim_enter_mode_insert;                vim_enter_mode(editor, .INSERT);
+        case .vim_enter_mode_visual;                vim_enter_mode(editor, .VISUAL);
+        case .vim_move_to_visual_line_start;        vim_move_to_visual_line_start(editor, buffer);
+        case .vim_move_to_visual_line_end;          vim_move_to_visual_line_end(editor, buffer);
+        case .vim_move_to_textual_line_start;       vim_move_to_textual_line_start(editor, buffer);
+        case .vim_move_to_textual_line_end;         vim_move_to_textual_line_end(editor, buffer);
+        case .vim_move_up_half_page;                vim_move_up_half_page(editor, buffer);
+        case .vim_move_down_half_page;              vim_move_down_half_page(editor, buffer);
+        case .vim_move_right_word_start;            vim_move_right_word_start(editor, buffer);
+        case .vim_move_right_word_end;              vim_move_right_word_end(editor, buffer);
+        case .vim_move_left_word_start;             vim_move_left_word_start(editor, buffer);
+        case .vim_move_left_word_end;               vim_move_left_word_end(editor, buffer);
+        case .vim_move_right_token_start;           vim_move_right_token_start(editor, buffer);
+        case .vim_move_right_token_end;             vim_move_right_token_end(editor, buffer);
+        case .vim_move_left_token_start;            vim_move_left_token_start(editor, buffer);
+        case .vim_move_left_token_end;              vim_move_left_token_end(editor, buffer);
+        case .vim_move_right_one_after_whitespace;  vim_move_right_one_after_whitespace(editor, buffer);
+        case .vim_move_right_one_before_whitespace; vim_move_right_one_before_whitespace(editor, buffer);
+        case .vim_move_left_one_after_whitespace;   vim_move_left_one_after_whitespace(editor, buffer);
+        case .vim_move_left_one_before_whitespace;  vim_move_left_one_before_whitespace(editor, buffer);
+
         case;                                   handled = false;
     }
 
@@ -332,6 +360,8 @@ active_editor_type_char :: (char: u32) {
         editor.search_bar.scroll_to_selected = .snap;
         return;
     }
+
+    if !vim_can_type_char(editor) then return;
 
     if buffer.readonly return;
 
@@ -3381,6 +3411,8 @@ copy_current_line_info :: (using editor: *Editor, buffer: Buffer) {
 
 Editor :: struct {
     buffer_id: s64;
+
+    vim_mode: Vim_Mode = .DEFAULT;  // DEFAULT if you don't want to use vim, otherwise NORMAL.
 
     cursors: [..] Cursor;
     main_cursor: s64;      // newly added cursors become main so that we jump to them

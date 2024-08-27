@@ -1,6 +1,6 @@
 dialog_handle_event :: (using dialog: *Generic_Choice_Dialog, event: Input.Event) -> handled: bool {
     if event.type == .KEYBOARD && event.key_pressed {
-        action, mapping := map_event_to_action(event, Action_Open_File_Dialog);
+        action, mapping := map_event_to_action(event, .DEFAULT, Action_Open_File_Dialog);
         if action == {
             case .escape;                   #through;
             case .close_dialog;             hide_dialog(dialog)   ;                         return true;

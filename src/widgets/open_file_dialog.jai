@@ -2,7 +2,7 @@ open_file_dialog_handle_event :: (event: Input.Event) -> handled: bool {
     using open_file_dialog;
 
     if event.type == .KEYBOARD && event.key_pressed {
-        action := map_event_to_action(event, Action_Open_File_Dialog);
+        action := map_event_to_action(event, .DEFAULT, Action_Open_File_Dialog);
         if action == {
             case .escape;                   #through;
             case .close_dialog;             hide_open_file_dialog(manual = true);                                          return true;

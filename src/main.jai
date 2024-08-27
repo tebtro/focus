@@ -301,11 +301,11 @@ main :: () {
             }
 
             if !handled {
-                action := map_event_to_action(event, Action_Editors);
+                action := map_event_to_action(event, .DEFAULT, Action_Editors);
                 handled = handle_common_editor_action(action);
             }
             if !handled {
-                action := map_event_to_action(event, Action_Build);
+                action := map_event_to_action(event, .DEFAULT, Action_Build);
                 handled = maybe_execute_a_build_command(action);
             }
 
@@ -932,6 +932,7 @@ dont_ignore_next_window_resize := false;
 #load "langs/markdown.jai";
 
 #load "custom/dynamic_fps.jai";
+#load "custom/vim.jai";
 
 #if OS == .WINDOWS {
     #load "platform/windows.jai";

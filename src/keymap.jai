@@ -1,12 +1,12 @@
 INVALID_KEYMAP_ACTION :: 0xFFFF;
 
-map_event_to_action :: (event: Input.Event, $Action: Type) -> Action, Key_Mapping {
+map_event_to_action :: (event: Input.Event, mode: Vim_Mode, $Action: Type) -> Action, Key_Mapping {
     invalid_action := cast(Action) INVALID_KEYMAP_ACTION;
     if event.type != .KEYBOARD || !event.key_pressed return invalid_action, .{};
 
     using key_sequence_input;
 
-    key_mappings := get_keymap_for_action_type(Action);
+    key_mappings := get_keymap_for_action_type(mode, Action);
     if potential_multipart_matches {
         filtered_mappings: [..] Key_Mapping;
         filtered_mappings.allocator = temp;
@@ -47,7 +47,7 @@ map_event_to_action :: (event: Input.Event, $Action: Type) -> Action, Key_Mappin
 // This function just remembers that a hold action is now active, so that we can deactivate it on key release.
 // The action itself is done elsewhere.
 activate_hold_action :: (action: $Action_Type, event: Input.Event) {
-    _, matched_mapping := map_event_to_action(event, Action_Type);  // we map it here again to avoid passing it in through multiple functions
+    _, matched_mapping := map_event_to_action(event, .DEFAULT, Action_Type);  // we map it here again to avoid passing it in through multiple functions
 
     hold_action := Hold_Action.{ action_type = Action_Type, matched_mapping = matched_mapping };
 
@@ -96,7 +96,7 @@ map_key_release_to_hold_actions :: (event: Input.Event, $Action: Type) -> [] Act
 }
 
 get_first_matching_key_sequence_from_action :: (action: $T) -> [][] string /* temp */ {
-    keymap := get_keymap_for_action_type(type_of(action));
+    keymap := get_keymap_for_action_type(.DEFAULT, type_of(action));
     key_sequence: [] Key_Combo = ---;
     found := false;
     action_code := cast(u32) action;
@@ -197,16 +197,20 @@ key_sequence_input_in_progress :: inline () -> bool {
 
 #scope_file
 
-get_keymap_for_action_type :: ($Action: Type) -> [] Key_Mapping #expand {
+get_keymap_for_action_type :: (mode: Vim_Mode, $Action: Type) -> [] Key_Mapping #expand {
     #if Action == Action_Common {
+        assert(mode == .DEFAULT);
         return config.keymap.common;
     } else #if Action == Action_Editors {
-        return config.keymap.editors;
+        return config.keymap.editors[mode];
     } else #if Action == Action_Open_File_Dialog {
+        assert(mode == .DEFAULT);
         return config.keymap.open_file_dialog;
     } else #if Action == Action_Search_Dialog {
+        assert(mode == .DEFAULT);
         return config.keymap.search_dialog;
     } else #if Action == Action_Build {
+        assert(mode == .DEFAULT);
         return config.build.keymap;
     } else {
         #assert(false, "In map_event_to_action, the passed action type is not supported.");
@@ -410,6 +414,29 @@ ACTIONS_EDITORS :: #run arrays_concat(ACTIONS_COMMON, string.[
     "toggle_line_wrap",
     "toggle_line_numbers",
     "copy_current_line_info",
+    // Vim
+    "vim_enter_mode_default",
+    "vim_enter_mode_normal",
+    "vim_enter_mode_insert",
+    "vim_enter_mode_visual",
+    "vim_move_to_visual_line_start",
+    "vim_move_to_visual_line_end",
+    "vim_move_to_textual_line_start",
+    "vim_move_to_textual_line_end",
+    "vim_move_up_half_page",
+    "vim_move_down_half_page",
+    "vim_move_right_word_start",
+    "vim_move_right_word_end",
+    "vim_move_left_word_start",
+    "vim_move_left_word_end",
+    "vim_move_right_token_start",
+    "vim_move_right_token_end",
+    "vim_move_left_token_start",
+    "vim_move_left_token_end",
+    "vim_move_right_one_after_whitespace",
+    "vim_move_right_one_before_whitespace",
+    "vim_move_left_one_after_whitespace",
+    "vim_move_left_one_before_whitespace",
 ]);
 
 ACTIONS_OPEN_FILE_DIALOG :: #run arrays_concat(ACTIONS_COMMON, string.[

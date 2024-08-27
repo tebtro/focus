@@ -6,7 +6,7 @@ text_input_handle_event :: (using input: *Text_Input, event: Input.Event) -> han
     }
     if to_float64_seconds(frame_time - last_edit_time) >= EDIT_GROUP_TIMEOUT then new_edit_group(input);
 
-    action := map_event_to_action(event, Action_Common);
+    action := map_event_to_action(event, .DEFAULT, Action_Common);
 
     extend_selection := event.shift_pressed;
 

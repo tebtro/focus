@@ -442,7 +442,9 @@ merge_configs :: (dst: *Config, parsed: Parsed_Config) {
         dst_keymap.* = src_keymap.*;
     }
     merge_keymaps(*dst.keymap.common,           *parsed.keymap_common);
-    merge_keymaps(*dst.keymap.editors,          *parsed.keymap_editors);
+    for parsed.keymap_editors {
+        merge_keymaps(*dst.keymap.editors[it_index], *it);
+    }
     merge_keymaps(*dst.keymap.open_file_dialog, *parsed.keymap_open_file_dialog);
     merge_keymaps(*dst.keymap.search_dialog,    *parsed.keymap_search_dialog);
 
@@ -597,7 +599,7 @@ Status_Bar_Position :: enum {
 
 Keymap :: struct {
     common:           [] Key_Mapping;
-    editors:          [] Key_Mapping;
+    editors:          [Vim_Mode.COUNT][] Key_Mapping;
     open_file_dialog: [] Key_Mapping;
     search_dialog:    [] Key_Mapping;
 

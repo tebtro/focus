@@ -189,6 +189,9 @@ base_commands := #run -> [] Command {
         cmd( "Copy Current Line Info",            .copy_current_line_info,           .Single ),
 
         cmd( "Choose Language Syntax",            .choose_language,                  .Single ),
+
+        cmd( "Enable Vim",                        .vim_enter_mode_normal,            .Single ),
+        cmd( "Disable Vim",                       .vim_enter_mode_default,           .Single ),
     ];
 
     linux_commands := Command.[
