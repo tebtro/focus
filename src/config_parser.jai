@@ -3,13 +3,12 @@ CONFIG_SECTIONS :: Config_Section.[
     .{
         name = "workspace",
         subsections = .[
-            "workspace dirs",
-            "ignore dirs",
-            "allow file extensions",
-            "ignore file extensions",
+            "ignore",
+            "allow",
             "file associations",
         ],
         parse_function = "parse_workspace_line",
+        allow_lines_outside_subsection = true,
     },
     .{
         name = "settings",
@@ -45,24 +44,25 @@ CONFIG_SECTIONS :: Config_Section.[
     },
 ];
 
-parse_config :: (name: string, filename: string, file_data: string, for_highlighting := false, as_theme := false) -> Config_Parse_Result {
+parse_config :: (name: string, file_path: string, file_data: string, for_highlighting := false, as_theme := false) -> Config_Parse_Result {
     // NOTE: This function allocates a lot and never frees.
     //       It expects context.allocator to be either temp or a pool allocator.
 
     using parser: Config_Parser;
     parser.parse_for_highlighting = for_highlighting;
     parser.parse_as_theme = as_theme;
+    if file_path then parser.config_path = get_parent_dir_path(file_path);
 
     trimmed_data := trim_left(file_data, " \t\n\r");  // skip empty lines, otherwise the handler will crash!
-    start_from_memory(*handler, name, filename, trimmed_data);
+    start_from_memory(*handler, name, file_path, trimmed_data);
     if handler.failed {
-        result.error_msg = tprint("Couldn't parse file '%'.\nPlease check that the version number is specified at the top in brackets, otherwise check the error log.", filename);
+        result.error_msg = tprint("Couldn't parse file '%'.\nPlease check that the version number is specified at the top in brackets, otherwise check the error log.", file_path);
         return result;
     }
 
     result.config.version = handler.version;
     if result.config.version != CURRENT_CONFIG_VERSION {
-        result.error_msg = tprint("Invalid version [%] in file '%'. The only supported version is [%].", result.config.version, filename, CURRENT_CONFIG_VERSION);
+        result.error_msg = tprint("Invalid version [%] in file '%'. The only supported version is [%].", result.config.version, file_path, CURRENT_CONFIG_VERSION);
         return result;
     }
 
@@ -369,6 +369,8 @@ maybe_switch_section :: (using parser: *Config_Parser, line: string, fix_section
 
         if active_section == .style then result.config.offsets.style_section = line_start_offset;
 
+        if result.config.offsets.colors_section_start >= 0 && result.config.offsets.colors_section_end < 0 then result.config.offsets.colors_section_end = line_start_offset;
+
     } else {
         // Subsection
         if !ends_with(line, "]") return true, tprint("Invalid subsection '%'. Subsection definitions must end with ]", line);
@@ -405,6 +407,12 @@ maybe_switch_section :: (using parser: *Config_Parser, line: string, fix_section
             return builder_to_string(*b);
         }
 
+        if active_subsection == .style_colors {
+            result.config.offsets.colors_section_start = line_start_offset;
+        } else if result.config.offsets.colors_section_start >= 0 && result.config.offsets.colors_section_end < 0 {
+            result.config.offsets.colors_section_end = line_start_offset;
+        }
+
         if parse_as_theme && active_subsection != .style_colors return true, "";  // don't highlight any subsections other than colors
 
         add_highlight(parser, 0, line.count, .header2);
@@ -418,59 +426,42 @@ parse_workspace_line :: (using parser: *Config_Parser, line: string) -> success:
     add_highlight(parser, 0, line.count, .default);
 
     if active_subsection == {
-        case .workspace_workspace_dirs;
-            dir_path, success := get_absolute_path(line,, temp);
-            original_path := copy_temporary_string(line);
-            path_overwrite_separators(original_path, #char "/");
-            path_overwrite_separators(dir_path,      #char "/");
-            if !success || !platform_path_equals(original_path, dir_path) {
-                add_highlight(parser, 0, line.count, .error);
-                return true, tprint("Invalid directory '%'. Maybe it's not an absolute path or has a double slash?", line);
-            }
+        case .none;
+            path := copy_temporary_string(line);
+            path_overwrite_separators(path, #char "/");
+            path = trim_right(path, "/");
+            relative_to_config := !is_absolute_path(path) && config_path;
+            abs_path := ifx relative_to_config then tprint("%/%", config_path, path) else path;
 
-            dir_path = copy_string(dir_path);
-            if file_exists(dir_path) {
-                array_add(*result.config.workspace_dirs, dir_path);
+            if file_exists(abs_path) {
+                array_add(*result.config.members, copy_string(abs_path));
             } else {
                 if parse_for_highlighting {
                     // Highlight the bad chunk
-                    for chunk : split(dir_path, "/",, temp) {
-                        dir_prefix := slice(dir_path, 0, chunk.data - dir_path.data + chunk.count);
-                        if !file_exists(dir_prefix) {
-                            add_highlight(parser, chunk.data - dir_path.data, chunk.count, .error);
+                    for chunk : split(path, "/",, temp) {
+                        dir_prefix := slice(path, 0, chunk.data - path.data + chunk.count);
+                        if !dir_prefix continue;
+                        abs_dir_prefix := ifx relative_to_config then tprint("%/%", config_path, dir_prefix) else dir_prefix;
+                        if !file_exists(abs_dir_prefix) {
+                            add_highlight(parser, chunk.data - path.data, chunk.count, .error);
                             break;
                         }
                     }
                 }
-                return true, tprint("Directory '%' doesn't exist.", dir_path);
+                return true, tprint("Attempted to load '%', but it doesn't exist", abs_path);
             }
-        case .workspace_ignore_dirs;
-            dirs := split(line, cast(u8) #char " ",, temp);
-            for dir : dirs {
-                if !dir continue;
-                path_overwrite_separators(dir, #char "/");
-                array_add(*result.config.ignore_dirs, dir);
-            }
-        case .workspace_allow_file_extensions;
-            extensions := split(line, cast(u8) #char " ",, temp);
-            for extensions {
-                if !it continue;
-                if contains_any_character(it, "*?") {
-                    array_add(*result.config.allow_file_extension_wildcards, trim_left(it, ".\t "));
-                } else {
-                    array_add(*result.config.allow_file_extensions, trim_left(it, "\t "));
-                }
-            }
-        case .workspace_ignore_file_extensions;
-            extensions := split(line, cast(u8) #char " ",, temp);
-            for extensions {
-                if !it continue;
-                if contains_any_character(it, "*?") {
-                    array_add(*result.config.ignore_file_extension_wildcards, trim_left(it, ".\t "));
-                } else {
-                    array_add(*result.config.ignore_file_extensions, trim_left(it, "\t "));
-                }
-            }
+        case .workspace_ignore;
+            item := copy_string(trim(line, "\t "));
+            item = trim_right(item, "/");
+            path_overwrite_separators(item, #char "/");
+            array_add(*result.config.ignore, item);
+
+        case .workspace_allow;
+            item := copy_string(trim(line, "\t "));
+            item = trim_right(item, "/");
+            path_overwrite_separators(item, #char "/");
+            array_add(*result.config.allow, trim(item, "\t "));
+
         case .workspace_file_associations;
             found, wildcards, lang_name := split_from_left(line, cast(u8) #char ":");
             wildcards, lang_name = trim(wildcards), trim(lang_name);
@@ -645,35 +636,6 @@ parse_style_line :: (using parser: *Config_Parser, line: string) -> success: boo
     return true, "";
 }
 
-hex_to_color_vec4 :: (src_hex: string) -> Vector4, success: bool {
-    hex := src_hex;
-    if hex.count == 6 then hex = tprint("%FF", hex);
-    if hex.count != 8 return Vector4.{}, false;
-
-    r := slice(hex, 0, 2);
-    g := slice(hex, 2, 2);
-    b := slice(hex, 4, 2);
-    a := slice(hex, 6, 2);
-
-    to_float :: (byte_str: string) -> float {
-        hex_digit_to_int :: (char: u8) -> int {
-            char = to_upper(char);
-            if #char "0" <= char && char <= #char "9" return char - #char "0";
-            if #char "A" <= char && char <= #char "F" return 10 + char - #char "A";
-            return -1;
-        }
-
-        d1, d0 := cast(float)hex_digit_to_int(byte_str[0]), cast(float) hex_digit_to_int(byte_str[1]);
-        if d1 < 0 || d0 < 0 return -1;
-
-        return (16 * d1 + d0) / 255;
-    }
-
-    c := Vector4.{ to_float(r), to_float(g), to_float(b), to_float(a) };
-
-    return c, c.x >= 0 && c.y >= 0 && c.z >= 0 && c.w >= 0;
-}
-
 parse_build_line :: (using parser: *Config_Parser, line: string) -> success: bool, error_msg: string /* temp */ {
     using result.config.build;
 
@@ -755,38 +717,65 @@ parse_build_line :: (using parser: *Config_Parser, line: string) -> success: boo
                     JAI;
                     print_to_builder(*b, code, option.name);
 
-                    // Validate working directories
+                    // Process working directories
                     if option.name == "build_working_dir" || option.name == "run_working_dir" {
                         code := #string JAI
-                            dir_path, success := get_absolute_path(setting_value,, temp);
-                            original_path := copy_temporary_string(setting_value);
-                            path_overwrite_separators(original_path, #char "/");
-                            path_overwrite_separators(dir_path,      #char "/");
-                            if !success || !platform_path_equals(original_path, dir_path) {
-                                add_highlight(parser, setting_value.data - line.data, setting_value.count, .error);
-                                return true, tprint("Invalid directory '%'. Maybe it's not an absolute path or has a double slash?", setting_value);
+                            // Exit early if variables are used in path
+                            vars_used := false;
+                            var_names := string.[
+                                "%FILE%", "%FILE_DIR%", "%FILE_NAME%", "%FILE_NAME_NO_EXTENSION%", "%PROJECT_CONFIG_DIR%",
+                            ];
+                            for var : var_names {
+                                start_index := 0;
+                                while true {
+                                    index := find_index_from_left(setting_value, var, start_index);
+                                    if index < 0 break;
+                                    start_index = index + var.count;
+                                    add_highlight(parser, setting_value.data - line.data + index, var.count, .value);
+                                    vars_used = true;
+                                }
                             }
-                            if file_exists(dir_path) {
+                            if vars_used return true, "";  // we're unable to validate it at this point
+                        JAI;
+                        append(*b, code);
+
+                        code = #string JAI
+                            // Validate path and handle relative paths
+                            dir_path := copy_temporary_string(setting_value);
+                            path_overwrite_separators(dir_path, #char "/");
+                            working_dir := get_working_directory_from_workspace(result.config.members);
+                            relative_to_working_dir := !is_absolute_path(dir_path) && working_dir;
+                            abs_path := ifx relative_to_working_dir then tprint("%%/%%", working_dir, dir_path) else dir_path;
+
+                            if file_exists(abs_path) {
+                                target.%1 = copy_string(abs_path);
                                 return true, "";
                             } else {
+                                if !is_absolute_path(dir_path) && !working_dir  return true, "";  // if the workspace is empty, don't check relative paths
+
                                 // Highlight the bad chunk
                                 for chunk : split(dir_path, "/",, temp) {
                                     dir_prefix := slice(dir_path, 0, chunk.data - dir_path.data + chunk.count);
-                                    if !file_exists(dir_prefix) {
+                                    if !dir_prefix continue;
+                                    abs_dir_prefix := ifx relative_to_working_dir then tprint("%%/%%", working_dir, dir_prefix) else dir_prefix;
+                                    if !file_exists(abs_dir_prefix) {
                                         add_highlight(parser, setting_value.data - line.data + chunk.data - dir_path.data, chunk.count, .error);
                                         break;
                                     }
                                 }
-                                return true, tprint("Directory '%' doesn't exist.", dir_path);
+                                return true, tprint("Tried to use '%%' as a working dir in a build command, but it doesn't exist.", abs_path);
                             }
                         JAI;
-                        append(*b, code);
+                        print_to_builder(*b, code, option.name);
                     }
 
                     // Highlight variables in the commands, if present
                     if option.name == "build_command" || option.name == "run_command" {
                         code := #string JAI
-                            var_names := string.["%FILE%", "%FILE_DIR%", "%FILE_NAME%", "%FILE_NAME_NO_EXTENSION%", "%BUILD_WORKING_DIR%", "%RUN_WORKING_DIR%"];
+                            var_names := string.[
+                                "%FILE%", "%FILE_DIR%", "%FILE_NAME%", "%FILE_NAME_NO_EXTENSION%",
+                                "%BUILD_WORKING_DIR%", "%RUN_WORKING_DIR%", "%PROJECT_CONFIG_DIR%",
+                            ];
                             for var : var_names {
                                 start_index := 0;
                                 while true {
@@ -1185,13 +1174,10 @@ Parsed_Config :: struct {
     version: int;
 
     // Workspace
-    workspace_dirs:                  [..] string;
-    ignore_dirs:                     [..] string;
-    allow_file_extensions:           [..] string;
-    allow_file_extension_wildcards:  [..] string;
-    ignore_file_extensions:          [..] string;
-    ignore_file_extension_wildcards: [..] string;
-    file_associations:               [..] File_Association;
+    members:            [..] string;
+    ignore:             [..] string;
+    allow:              [..] string;
+    file_associations:  [..] File_Association;
 
     // Keymap
     keymap_common:           [..] Key_Mapping;
@@ -1220,6 +1206,9 @@ Parsed_Config :: struct {
     offsets: struct {
         style_section := -1;
         theme_line    := -1;
+
+        colors_section_start := -1;
+        colors_section_end   := -1;
     };
 };
 
@@ -1227,6 +1216,7 @@ Config_Parse_Result :: struct {
     config:     Parsed_Config;
     success:    bool;
     error_msg:  string;  // temp
+
     warnings:   [..] string;
     highlights: [..] Code_Highlight;
     warnings.allocator   = temp;  // I love jai
@@ -1250,6 +1240,8 @@ Config_Section :: struct {
 
 Config_Parser :: struct {
     handler: Text_File_Handler;
+
+    config_path: string;  // to be used for relative paths
 
     line_start_offset: s32;  // holds the start offset of the line being parsed (ignoring any whitespace at the start)
     section_offset:    s32;  // holds the offset of the last seen section header

@@ -1,4 +1,4 @@
-CURRENT_CONFIG_VERSION :: 4;
+CURRENT_CONFIG_VERSION :: 5;
 
 load_global_config :: (fallback_to_default_on_failure := false, force := false) -> success: bool, changed: bool, there_were_warnings: bool {
     config_path := tprint("%/global.focus-config", config_dir);
@@ -33,7 +33,7 @@ load_global_config :: (fallback_to_default_on_failure := false, force := false) 
     }
 }
 
-load_project_config_from_path :: (file_path: string, force := false) -> success: bool, changed: bool, there_were_warnings: bool {
+load_project_config :: (file_path: string, force := false) -> success: bool, changed: bool, there_were_warnings: bool {
     assert(file_path != "", "Attempting to load project config from an empty path. This is a bug.");
 
     config_path := copy_string(file_path,, temp);
@@ -61,82 +61,13 @@ load_project_config_from_path :: (file_path: string, force := false) -> success:
         free_loaded_config(*project_config);
         project_config = loaded_config;
 
+        add_to_most_recent_projects(file_path);
+
         return true, changed, loaded_config.there_were_warnings;
     } else {
         project_config.hash = loaded_config.hash;
         free_loaded_config(*loaded_config);
         return false, false, false;
-    }
-}
-
-load_project_config :: (project_name: string = "", force := false) -> success: bool, changed: bool, there_were_warnings: bool {
-    if !project_name && !(project_config.loaded && project_config.path) {
-        log_error("Attempted to load an empty project config. This is a bug.");
-        return false, false, false;
-    }
-
-    config_path := project_config.path;
-    if project_name then config_path = tprint("%/%.focus-config", projects_dir, project_name);
-
-    success, changed, there_were_warnings := load_project_config_from_path(config_path, force);
-
-    return success, changed, there_were_warnings;
-}
-
-apply_config :: () {
-    // Make sure the values are within the acceptable range
-    old_tab_size := TAB_SIZE;
-    TAB_SIZE = clamp(cast(s32) config.settings.tab_size, 1, 100);  // be reasonable mkay (though even 100 is unreasonable)
-    if config.settings.tab_size != TAB_SIZE then add_user_warning("Tab size clamped to %", TAB_SIZE);
-
-    if old_tab_size != TAB_SIZE {
-        // Refresh all editors which have line wrap on
-        for * editor : open_editors {
-            buffer := *open_buffers[editor.buffer_id];
-            if line_wrap_is_active(editor) then rescan_for_wrapped_lines(editor, buffer);
-        }
-    }
-
-    clamp_and_warn :: (setting: *$T, min: T, max: T, message: string) {
-        old := setting.*;
-        clamped := clamp(old, min, max);
-        if clamped != old {
-            add_user_warning(message, clamped);
-            setting.* = clamped;
-        }
-    }
-
-    clamp_and_warn(*config.settings.line_height_scale_percent,  50,  1000,        "Line height scale clamped to % percent");
-    clamp_and_warn(*config.settings.editor_history_size,        4,   1024 * 1024, "Editor history size clamped to %");
-    clamp_and_warn(*config.settings.build_panel_height_percent, 10,  100,         "Build panel height clamped to % percent");
-    clamp_and_warn(*config.settings.build_panel_width_percent,  10,  100,         "Build panel width clamped to % percent");
-
-    if config.settings.window_width  != -1    clamp_and_warn(*config.settings.window_width,  100, 10000, "Window width clamped to %");
-    if config.settings.window_height != -1    clamp_and_warn(*config.settings.window_height, 100, 3000,  "Window height clamped to %");
-    if config.settings.window_x      != -1000 clamp_and_warn(*config.settings.window_x,     -500, 10000, "Window X clamped to %");
-    if config.settings.window_y      != -1000 clamp_and_warn(*config.settings.window_y,     -500, 3000,  "Window Y clamped to %");
-
-    build_panel_width  = config.settings.build_panel_width_percent  / 100.0;
-    build_panel_height = config.settings.build_panel_height_percent / 100.0;
-    build_panel_height_anim.target = build_panel_height;
-    build_panel_set_line_wrap(config.settings.build_panel_line_wrap_always_on);
-
-    // Must do after the validation
-    init_fonts_and_dependent_things();
-
-    platform_apply_config();
-
-    array_reset_keeping_memory(*active_hold_actions);  // NOTE: this doesn't actually stop the actions, it's just here so that we don't
-                                                       //       keep pointers to old keymaps when the config is reloaded
-}
-
-free_loaded_config :: (using loaded_config: *Loaded_Config) {
-    path = "";
-    parsed_config = Parsed_Config.{};
-    if memory_pool {
-        reset(memory_pool);
-        free(memory_pool);
-        memory_pool = null;
     }
 }
 
@@ -146,10 +77,18 @@ refresh_config :: (path: string) {
         return;
     }
 
-    // Deep copy old workspace dirs (they will be freed by the load config function otherwise)
-    old_workspace_dirs: [..] string;
-    old_workspace_dirs.allocator = temp;
-    for config.workspace.workspace_dirs array_add(*old_workspace_dirs, copy_temporary_string(it));
+    // Deep copy old workspace members and allow/ignore lists (they will be freed by the load config function otherwise)
+    old_workspace_members: [..] string;
+    old_workspace_members.allocator = temp;
+    for config.workspace.members array_add(*old_workspace_members, copy_temporary_string(it));
+
+    old_allow_list: [..] string;
+    old_allow_list.allocator = temp;
+    for config.workspace.allow array_add(*old_allow_list, copy_temporary_string(it));
+
+    old_ignore_list: [..] string;
+    old_ignore_list.allocator = temp;
+    for config.workspace.ignore array_add(*old_ignore_list, copy_temporary_string(it));
 
     // Remember old file associations
     old_file_associations: [..] File_Association;
@@ -163,13 +102,13 @@ refresh_config :: (path: string) {
             add_success_message("Global config changes have been applied", dismiss_in_seconds = 3, tag = .config);
         }
         if project_config.loaded {
-            success, changed, there_were_warnings = load_project_config_from_path(project_config.path, force = true);
+            success, changed, there_were_warnings = load_project_config(project_config.path, force = true);
             if success && changed && !there_were_warnings {
                 add_success_message("Config changes for project '%' have been applied", get_current_project_name(), dismiss_in_seconds = 3, tag = .config);
             }
         }
     } else if platform_path_equals(path, project_config.path) {
-        success, changed, there_were_warnings := load_project_config();
+        success, changed, there_were_warnings := load_project_config(project_config.path);
         if success && changed && !there_were_warnings {
             clear_user_messages(.config);
             add_success_message("Config changes for project '%' have been applied", get_current_project_name(), dismiss_in_seconds = 3, tag = .config);
@@ -179,26 +118,48 @@ refresh_config :: (path: string) {
         return;
     }
 
-    // Detect changes in workspace dirs
-    dirs_added   := false;
-    dirs_removed := false;
-
-    for new_dir : config.workspace.workspace_dirs {
-        exists := array_find(old_workspace_dirs, new_dir);
-        if !exists { dirs_added = true; break; }
+    // Detect changes in workspace members or allow_ignore_lists
+    members_changed := false;
+    if config.workspace.members.count != old_workspace_members.count {
+        members_changed = true;
+    } else {
+        // Even if the workspace members are reordered we still want to refresh workspace
+        for i : 0 .. config.workspace.members.count-1 {
+            if config.workspace.members[i] != old_workspace_members[i] {
+                members_changed = true;
+                break;
+            }
+        }
     }
-    for old_dir : old_workspace_dirs {
-        exists := array_find(config.workspace.workspace_dirs, old_dir);
-        if !exists { dirs_removed = true; break; }
+
+    allow_ignore_changed := false;
+    for config.workspace.allow {
+        exists := array_find(old_allow_list, it);
+        if !exists { allow_ignore_changed = true; break; }
+    }
+    for old_allow_list {
+        exists := array_find(config.workspace.allow, it);
+        if !exists { allow_ignore_changed = true; break; }
     }
 
-    if dirs_added || dirs_removed {
+    for config.workspace.ignore {
+        exists := array_find(old_ignore_list, it);
+        if !exists { allow_ignore_changed = true; break; }
+    }
+    for old_ignore_list {
+        exists := array_find(config.workspace.ignore, it);
+        if !exists { allow_ignore_changed = true; break; }
+    }
+
+    if members_changed || allow_ignore_changed {
         should_reload_workspace = true;
         automatic_workspace_reload = true;
         if unsaved_buffers_exist() {
             show_unsaved_buffers_dialog(.reload_workspace);
             clear_user_messages();
-            add_user_warning("Workspace directories have changed in the config.\nWorkspace will need to reload, however there are unsaved changes.", tag = .workspace);
+
+            if members_changed      then add_user_warning("Workspace members have changed in the config.\nWorkspace will need to reload, however there are unsaved changes.", tag = .workspace);
+            if allow_ignore_changed then add_user_warning("Workspace ignore rules have changed in the config.\nWorkspace will need to reload, however there are unsaved changes.", tag = .workspace);
             should_reload_workspace = false;
         }
     }
@@ -213,7 +174,7 @@ refresh_config :: (path: string) {
             }
         }
     }
-    if file_associations_changed && !should_reload_workspace {
+    if file_associations_changed {
         // Reassign languages for all buffers in the workspace
         for * buffer : open_buffers {
             if !buffer.has_file continue;
@@ -233,11 +194,19 @@ refresh_config :: (path: string) {
 
 refresh_current_theme :: () {
     if global_config.loaded  then load_global_config(force = true);
-    if project_config.loaded then load_project_config(force = true);
+    if project_config.loaded then load_project_config(project_config.path, force = true);
 }
 
 is_our_config_file :: (path: string) -> bool {
-    return path != "" && (platform_path_equals(path, global_config.path) || platform_path_equals(path, project_config.path));
+    return path != "" && (is_current_global_config(path) || is_current_project_config(path));
+}
+
+is_current_global_config :: inline (path: string) -> bool {
+    return platform_path_equals(path, global_config.path);
+}
+
+is_current_project_config :: inline (path: string) -> bool {
+    return project_config.loaded && platform_path_equals(path, project_config.path);
 }
 
 is_current_theme :: (path: string) -> bool {
@@ -323,13 +292,14 @@ apply_style :: (parsed: Parsed_Config) {
         default_font_size = font_size;
     }
 
-    // Colors
-    for parsed.colors {
-        COLOR_MAP[it.color_id] = it.color;
-    }
-    // TODO: @colorref - resolve references
+    apply_parsed_colors(parsed.colors);
 
     platform_set_border_color();
+}
+
+apply_parsed_colors :: (colors: [] Parsed_Color) {
+    for colors  COLOR_MAP[it.color_id] = it.color;
+    // TODO: @colorref - resolve references
 }
 
 get_current_project_name :: () -> string {
@@ -340,10 +310,16 @@ get_current_project_name :: () -> string {
     // If the file name is <Project Name>.focus-config, return that
     if basename && basename != ".focus-config" return basename;
 
-    // If the file name is .focus-config, return the name of the parent dir
+    // If the file name is `.focus-config`, return the name of the parent dir
     parent_dir := trim_right(path, "/\\");
-    _, dir_name := path_decomp(parent_dir);
+    _, __, ___, dir_name := path_decomp(parent_dir);
     return dir_name;
+}
+
+get_current_project_dir :: () -> string {
+    if !project_config.loaded return "";
+
+    return trim_right(path_strip_filename(project_config.path), "/");
 }
 
 #scope_file
@@ -417,19 +393,21 @@ load_config :: (path: string, existing: *Loaded_Config, force := false) -> Loade
     return loaded_config;
 }
 
+free_loaded_config :: (using loaded_config: *Loaded_Config) {
+    path = "";
+    parsed_config = Parsed_Config.{};
+    if memory_pool {
+        reset(memory_pool);
+        free(memory_pool);
+        memory_pool = null;
+    }
+}
+
 merge_configs :: (dst: *Config, parsed: Parsed_Config) {
     // Completely replace the workspace subsections if present
-    if parsed.workspace_dirs then dst.workspace.workspace_dirs = parsed.workspace_dirs;
-    if parsed.ignore_dirs    then dst.workspace.ignore_dirs    = parsed.ignore_dirs;
-
-    if parsed.allow_file_extensions || parsed.allow_file_extension_wildcards {
-        dst.workspace.allow_file_extensions          = parsed.allow_file_extensions;
-        dst.workspace.allow_file_extension_wildcards = parsed.allow_file_extension_wildcards;
-    }
-    if parsed.ignore_file_extensions || parsed.ignore_file_extension_wildcards {
-        dst.workspace.ignore_file_extensions          = parsed.ignore_file_extensions;
-        dst.workspace.ignore_file_extension_wildcards = parsed.ignore_file_extension_wildcards;
-    }
+    if parsed.members           then dst.workspace.members = parsed.members;
+    if parsed.ignore            then dst.workspace.ignore  = parsed.ignore;
+    if parsed.allow             then dst.workspace.allow   = parsed.allow;
     if parsed.file_associations then dst.workspace.file_associations = parsed.file_associations;
 
     // Build config completely overrides the previous config if present
@@ -461,6 +439,53 @@ merge_configs :: (dst: *Config, parsed: Parsed_Config) {
 
     // Platform config
     dst.linux = parsed.linux;
+}
+
+apply_config :: () {
+    // Make sure the values are within the acceptable range
+    old_tab_size := TAB_SIZE;
+    TAB_SIZE = clamp(cast(s32) config.settings.tab_size, 1, 100);  // be reasonable mkay (though even 100 is unreasonable)
+    if config.settings.tab_size != TAB_SIZE then add_user_warning("Tab size clamped to %", TAB_SIZE);
+
+    if old_tab_size != TAB_SIZE {
+        // Refresh all editors which have line wrap on
+        for * editor : open_editors {
+            buffer := *open_buffers[editor.buffer_id];
+            if line_wrap_is_active(editor) then rescan_for_wrapped_lines(editor, buffer);
+        }
+    }
+
+    clamp_and_warn :: (setting: *$T, min: T, max: T, message: string) {
+        old := setting.*;
+        clamped := clamp(old, min, max);
+        if clamped != old {
+            add_user_warning(message, clamped);
+            setting.* = clamped;
+        }
+    }
+
+    clamp_and_warn(*config.settings.line_height_scale_percent,  50,  1000,        "Line height scale clamped to % percent");
+    clamp_and_warn(*config.settings.editor_history_size,        4,   1024 * 1024, "Editor history size clamped to %");
+    clamp_and_warn(*config.settings.build_panel_height_percent, 10,  100,         "Build panel height clamped to % percent");
+    clamp_and_warn(*config.settings.build_panel_width_percent,  10,  100,         "Build panel width clamped to % percent");
+
+    if config.settings.window_width  != -1    clamp_and_warn(*config.settings.window_width,  100, 10000, "Window width clamped to %");
+    if config.settings.window_height != -1    clamp_and_warn(*config.settings.window_height, 100, 3000,  "Window height clamped to %");
+    if config.settings.window_x      != -1000 clamp_and_warn(*config.settings.window_x,     -500, 10000, "Window X clamped to %");
+    if config.settings.window_y      != -1000 clamp_and_warn(*config.settings.window_y,     -500, 3000,  "Window Y clamped to %");
+
+    build_panel_width  = config.settings.build_panel_width_percent  / 100.0;
+    build_panel_height = config.settings.build_panel_height_percent / 100.0;
+    build_panel_height_anim.target = build_panel_height;
+    build_panel_set_line_wrap(config.settings.build_panel_line_wrap_always_on);
+
+    // Must do after the validation
+    init_fonts_and_dependent_things();
+
+    platform_apply_config();
+
+    array_reset_keeping_memory(*active_hold_actions);  // NOTE: this doesn't actually stop the actions, it's just here so that we don't
+                                                       //       keep pointers to old keymaps when the config is reloaded
 }
 
 load_font_by_name :: (name: string) -> font_data: string, success: bool {
@@ -525,13 +550,10 @@ Linux_Config :: struct {
 }
 
 Workspace :: struct {
-    workspace_dirs:                  [] string;
-    ignore_dirs:                     [] string;
-    allow_file_extensions:           [] string;
-    ignore_file_extensions:          [] string;
-    allow_file_extension_wildcards:  [] string;
-    ignore_file_extension_wildcards: [] string;
-    file_associations:               [] File_Association;
+    members:            [] string;
+    ignore:             [] string;
+    allow:              [] string;
+    file_associations:  [] File_Association;
 }
 
 Settings :: struct {
@@ -544,6 +566,8 @@ Settings :: struct {
     cursor_as_block                               := true;
     cursor_blink_time_in_seconds                  := 5;
     highlight_selection_occurrences               := true;
+    highlight_line_with_cursor                    := false;
+    highlight_matching_brackets                   := false;
     disable_that_annoying_paste_effect            := false;
     disable_file_open_close_animations            := false;
     disable_viewport_chasing_cursor_near_the_edge := false;
@@ -564,7 +588,6 @@ Settings :: struct {
     dark_titlebar                                 := false;
     colored_titlebar                              := true;
     hide_mouse_when_typing                        := true;
-    highlight_line_with_cursor                    := false;
     draw_indent_guides                            := false;
     auto_surround_with_brackets_and_quotes        := false;
     auto_close_brackets                           := false;
@@ -574,6 +597,7 @@ Settings :: struct {
     show_cursors_off_screen                       := true;
     persist_local_search_results                  := false;
     show_selected_text_length                     := false;
+    load_most_recent_project_on_start             := false;
 
     build_panel_width_percent                     := 50;
     build_panel_height_percent                    := 50;
@@ -584,6 +608,7 @@ Settings :: struct {
     save_all_file_backed_buffers_on_build         := false;
 
     status_bar_position                           := Status_Bar_Position.bottom;
+    color_preview_popup                           := Color_Preview_Popup.enabled;
 
     // TODO
     // convert_tabs_to_spaces_on_load:     false
@@ -593,6 +618,12 @@ Settings :: struct {
 Status_Bar_Position :: enum {
     bottom;
     top;
+}
+
+Color_Preview_Popup :: enum {
+    enabled;
+    minimized;
+    disabled;
 }
 
 Keymap :: struct {

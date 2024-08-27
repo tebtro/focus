@@ -18,7 +18,9 @@ maybe_migrate_config :: (name: string, file_data: string) -> migrated: bool, mod
         config_info.version = handler.version;
 
         current_section := assume_section;
-        current_subsection: string;
+        previous_section: string;
+        current_subsection:  string;
+        previous_subsection: string;
 
         while true {
             line, found := consume_next_line(*handler);
@@ -26,13 +28,42 @@ maybe_migrate_config :: (name: string, file_data: string) -> migrated: bool, mod
 
             line_start_offset := line.data - trimmed_data.data;
 
+            just_entered_section := false;
+
             if begins_with(line, "[[") && ends_with(line, "]]") {
+                previous_section = current_section;
                 current_section = trim(line, " \t[]");
+                just_entered_section = true;
+
+                if config_info.version < 5 {
+                    using config_info.workspace_v5_rewrite;
+                    if current_section == "workspace" {
+                        workspace_section.start = xx line_start_offset;
+                        workspace_section.end   = xx trimmed_data.count;
+                    } else if previous_section == "workspace" {
+                        workspace_section.end = xx line_start_offset;
+                    }
+                }
             } else if begins_with(line, "[") && ends_with(line, "]") {
+                previous_subsection = current_subsection;
                 current_subsection = trim(line, " \t[]");  // NOTE: doesn't validate and it's OK
+                just_entered_section = true;
             }
 
             if current_section == {
+                case "workspace";
+                    if config_info.version < 5 && !just_entered_section {
+                        // Workspace structure has changed in version [5]
+                        using config_info.workspace_v5_rewrite;
+
+                        if current_subsection == {
+                            case "workspace dirs";          array_add(*workspace_dirs, line);
+                            case "file associations";       array_add(*file_associations, line);
+                            case "allow file extensions";   for extension : split(line, " ")  array_add(*allowed_extensions, extension);
+                            case "ignore file extensions";  for extension : split(line, " ")  array_add(*ignored_extensions, extension);
+                            case "ignore dirs";             for dir : split(line, " ")  array_add(*ignored_dirs, dir);
+                        }
+                    }
                 case "settings";
                     setting_name, setting_value := break_by_spaces(line);
                     setting_name = trim_right(setting_name, ":");
@@ -73,6 +104,113 @@ maybe_migrate_config :: (name: string, file_data: string) -> migrated: bool, mod
     {
         array_resize(*modified_data, trimmed_data.count, initialize = false);
         focus_memcpy(modified_data.data, trimmed_data.data, trimmed_data.count);
+
+        // Migrate workspace to version [5]
+        if config_info.version < 5 && config_info.workspace_v5_rewrite.workspace_section.start >= 0 {
+            using config_info.workspace_v5_rewrite;
+
+            // Remove the workspace section and recreate it
+            old_section_length := workspace_section.end - workspace_section.start;
+            assert(old_section_length > 0);
+            array_delete_bytes(*modified_data, workspace_section.start, old_section_length);
+
+            // Allow any file extensions which were in the original config but which aren't in the builtin allow list
+            allow_contents: string;
+            {
+                b: String_Builder;
+                for allowed_extensions {
+                    if contains_any_character(it, "*?") {
+                        print_to_builder(*b, "%\n", it);   // add as is
+                    } else {
+                        extension := trim_left(trim(it), ".");
+                        if !is_known_text_file_extension(extension) then print_to_builder(*b, "*.%\n", extension);  // convert to a wildcard
+                    }
+                }
+                allow_contents = trim(builder_to_string(*b));
+            }
+
+            // Ignore any file extensions which were in the original config but which aren't in the builtin ignore list
+            ignore_contents: string;
+            {
+                b: String_Builder;
+                for ignored_dirs {
+                    print_to_builder(*b, "%\n", it);
+                }
+                for ignored_extensions {
+                    if contains_any_character(it, "*?") {
+                        print_to_builder(*b, "%\n", it);   // add as is
+                    } else {
+                        extension := trim_left(trim(it), ".");
+                        if !is_known_binary_file_extension(extension) then print_to_builder(*b, "*.%\n", extension);  // convert to a wildcard
+                    }
+                }
+                ignore_contents = trim(builder_to_string(*b));
+            }
+
+
+            // Construct a migrated version
+            WORKSPACE_TOP_LEVEL :: #string DONE
+[[workspace]]
+# These directories and files will be scanned when a workspace is opened so that search etc. works.
+%
+DONE
+            IGNORE_SECTION :: #string DONE
+[ignore]
+# Files and directories matching the following wildcards will not be loaded or descended into
+# Example:
+# *.js - will ignore all files with a '.js' extension
+# tmp* - will ignore any files or directories which start with 'tmp'
+# C:/project/dirname/** - will ignore everything under `dirname`
+# C:/project/dirname/*  - will ignore all files under `dirname`, but not recursively
+%
+
+DONE
+            ALLOW_SECTION :: #string DONE
+[allow]
+# Files and directories matching the wildcards in this section will be loaded, even if they are ignored in the previous section.
+# NOTE: known binary file extensions are ignored by default (*.exe, *.obj etc.). If this is not what you want, you can explicitly allow them here.
+%
+
+DONE
+            FILE_ASSOCIATIONS_SECTION :: #string DONE
+[file associations]
+# Optional file associations in the format `<wildcard1> <wildcard2> ... : <language>`
+# Example:
+# *.hpp *.hh *.h : cpp
+# todo.txt : todo
+%
+
+DONE
+
+            b: String_Builder;
+
+            print_to_builder(*b, WORKSPACE_TOP_LEVEL, join(..workspace_dirs, separator = "\n"));
+            if workspace_dirs then append(*b, "\n");
+
+            if ignore_contents {
+                print_to_builder(*b, IGNORE_SECTION, ignore_contents);
+            }
+
+            if allow_contents {
+                print_to_builder(*b, ALLOW_SECTION, allow_contents);
+            }
+
+            if is_global_config {
+                print_to_builder(*b, FILE_ASSOCIATIONS_SECTION, join(..file_associations, separator = "\n"));  // add even if not present
+                if file_associations then append(*b, "\n");
+            }
+
+            new_section := builder_to_string(*b);
+
+            array_insert_bytes_at(*modified_data, workspace_section.start, cast([]u8) new_section);
+
+            // Adjust the offsets we remembered
+            bytes_delta := new_section.count - old_section_length;
+            if config_info.last_setting_offset         >= workspace_section.end then config_info.last_setting_offset         += bytes_delta;
+            if config_info.last_color_offset           >= workspace_section.end then config_info.last_color_offset           += bytes_delta;
+            if config_info.last_common_keybind_offset  >= workspace_section.end then config_info.last_common_keybind_offset  += bytes_delta;
+            if config_info.last_editors_keybind_offset >= workspace_section.end then config_info.last_editors_keybind_offset += bytes_delta;
+        }
 
         // Insert new settings
         if config_info.last_setting_offset >= 0 && is_global_config {
@@ -334,7 +472,11 @@ ADDED_SETTINGS :: Added_Setting.[
     .{ 4, "window_width",                                       "-1" },
     .{ 4, "window_height",                                      "-1" },
     .{ 4, "insert_final_newline_on_save",                       "false" },
-    .{ 4, "status_bar_position",                                "bottom" },
+    .{ 4, "status_bar_position",                                "bottom  # options: top, bottom" },
+
+    .{ 5, "load_most_recent_project_on_start",                  "false" },
+    .{ 5, "color_preview_popup",                                "enabled  # options: enabled, minimized, disabled" },
+    .{ 5, "highlight_matching_brackets",                        "false" },
 ];
 
 REMOVED_SETTINGS :: Removed_Setting.[
@@ -410,19 +552,21 @@ COLOR_VALUES_INDENT :: #run -> int {
 }
 
 ADDED_KEYBINDS :: Added_Keybind.[
-    .{ 2, "editors", "add_cursors_to_line_ends",        "Alt-Shift-I",      "Alt-Shift-I"      },
-    .{ 2, "editors", "add_cursors_to_line_starts",      "Alt-Shift-Ctrl-I", "Alt-Shift-Ctrl-I" },
-    .{ 2, "editors", "align_cursors",                   "Alt-A",            "Alt-Cmd-A"        },
-    .{ 2, "editors", "select_all_occurrences",          "Ctrl-Shift-A",     "Cmd-Shift-A"      },
-    .{ 2, "common",  "toggle_build_panel",              "Ctrl-B",           "Cmd-B"            },
-    .{ 2, "common",  "toggle_fullscreen",               "F11",              "F11"              },
-    .{ 2, "common",  "switch_between_open_files",       "Ctrl-Tab",         "Ctrl-Tab"         },
+    .{ 2, "editors", "add_cursors_to_line_ends",                  "Alt-Shift-I",        "Alt-Shift-I"      },
+    .{ 2, "editors", "add_cursors_to_line_starts",                "Alt-Shift-Ctrl-I",   "Alt-Shift-Ctrl-I" },
+    .{ 2, "editors", "align_cursors",                             "Alt-A",              "Alt-Cmd-A"        },
+    .{ 2, "editors", "select_all_occurrences",                    "Ctrl-Shift-A",       "Cmd-Shift-A"      },
+    .{ 2, "common",  "toggle_build_panel",                        "Ctrl-B",             "Cmd-B"            },
+    .{ 2, "common",  "toggle_fullscreen",                         "F11",                "F11"              },
+    .{ 2, "common",  "switch_between_open_files",                 "Ctrl-Tab",           "Ctrl-Tab"         },
 
-    .{ 3, "common",  "open_another_editor_instance",              "Ctrl-Shift-Alt-N",   "Cmd-Shift-Alt-N" },
-    .{ 3, "common",  "go_to_next_build_error",                    "F8",                 "F8"              },
-    .{ 3, "common",  "go_to_next_build_error_on_the_side",        "Ctrl-F8",            "Cmd-F8"          },
-    .{ 3, "common",  "go_to_previous_build_error",                "Shift-F8",           "Shift-F8"        },
-    .{ 3, "common",  "go_to_previous_build_error_on_the_side",    "Shift-Ctrl-F8",      "Shift-Cmd-F8"    },
+    .{ 3, "common",  "open_another_editor_instance",              "Ctrl-Shift-Alt-N",   "Cmd-Shift-Alt-N"  },
+    .{ 3, "common",  "go_to_next_build_error",                    "F8",                 "F8"               },
+    .{ 3, "common",  "go_to_next_build_error_on_the_side",        "Ctrl-F8",            "Cmd-F8"           },
+    .{ 3, "common",  "go_to_previous_build_error",                "Shift-F8",           "Shift-F8"         },
+    .{ 3, "common",  "go_to_previous_build_error_on_the_side",    "Shift-Ctrl-F8",      "Shift-Cmd-F8"     },
+
+    .{ 5, "common", "jump_to_matching_bracket",                   "{Shift}-Ctrl-M",     "{Shift}-Cmd-M"    },
 ];
 
 RENAMED_KEYBINDS :: Renamed_Keybind.[
@@ -447,7 +591,19 @@ Config_Info :: struct {
     last_color_offset   := -1;
     last_common_keybind_offset  := -1;
     last_editors_keybind_offset := -1;
+
+    workspace_v5_rewrite: Workspace_V5_Rewrite_Info;  // only for migration to version [5]
 };
+
+Workspace_V5_Rewrite_Info :: struct {
+    workspace_section   := Offset_Range.{ -1, -1 };
+
+    workspace_dirs:     [..] string;
+    ignored_dirs:       [..] string;
+    ignored_extensions: [..] string;
+    allowed_extensions: [..] string;
+    file_associations:  [..] string;
+}
 
 Added_Setting :: struct {
     version: int;
@@ -497,16 +653,21 @@ RUN_TESTS :: false;
 // Also your code must comply with the SOLID principles. Are we real programmers or what?
 
 #if RUN_TESTS #run,stallable {
-    run_test("Settings migration [1] to [4]",   "global.focus-config",  SETTINGS_1_TO_4,               SETTINGS_1_TO_4_EXPECTED);
-    run_test("Settings migration [2] to [4]",   "global.focus-config",  SETTINGS_2_TO_4,               SETTINGS_2_TO_4_EXPECTED);
-    run_test("Project settings [1] to [4]",     "project.focus-config", PROJECT_SETTINGS_1_TO_4,       PROJECT_SETTINGS_1_TO_4_EXPECTED);
-    run_test("Сolors [1] to [4]",               "global.focus-config",  COLORS_1_TO_4,                 COLORS_1_TO_4_EXPECTED);
-    run_test("Сolors [2] to [4]",               "global.focus-config",  COLORS_2_TO_4,                 COLORS_2_TO_4_EXPECTED);
-    run_test("Colors and settings [1] to [4]",  "global.focus-config",  COLORS_AND_SETTINGS_1_TO_4,    COLORS_AND_SETTINGS_1_TO_4_EXPECTED);
-    run_test("Keybinds [1] to [4]",             "global.focus-config",  KEYBINDS_1_TO_4,               KEYBINDS_1_TO_4_EXPECTED);
-    run_test("Keybinds [2] to [4]",             "global.focus-config",  KEYBINDS_2_TO_4,               KEYBINDS_2_TO_4_EXPECTED);
-    run_test("Theme [1] to [4]",                "nord.focus-theme",     THEME_1_TO_4,                  THEME_1_TO_4_EXPECTED);
-    run_test("Theme [3] to [4]",                "handmade.focus-theme", THEME_3_TO_4,                  THEME_3_TO_4_EXPECTED);
+    run_test("Workspace migration from [3]",  "global.focus-config",  WORKSPACE_3,              WORKSPACE_3_EXPECTED);
+    run_test("Settings migration from [1]",   "global.focus-config",  SETTINGS_1,               SETTINGS_1_EXPECTED);
+    run_test("Settings migration from [2]",   "global.focus-config",  SETTINGS_2,               SETTINGS_2_EXPECTED);
+    run_test("Project settings from [1]",     "project.focus-config", PROJECT_SETTINGS_1,       PROJECT_SETTINGS_1_EXPECTED);
+    run_test("Project workspace from [3]",    "project.focus-config", PROJECT_WORKSPACE_3,      PROJECT_WORKSPACE_3_EXPECTED);
+    run_test("Сolors from [1]",               "global.focus-config",  COLORS_1,                 COLORS_1_EXPECTED);
+    run_test("Сolors from [2]",               "global.focus-config",  COLORS_2,                 COLORS_2_EXPECTED);
+    run_test("Colors and settings from [1]",  "global.focus-config",  COLORS_AND_SETTINGS_1,    COLORS_AND_SETTINGS_1_EXPECTED);
+    run_test("Keybinds from [1]",             "global.focus-config",  KEYBINDS_1,               KEYBINDS_1_EXPECTED);
+    run_test("Keybinds from [2]",             "global.focus-config",  KEYBINDS_2,               KEYBINDS_2_EXPECTED);
+    run_test("Theme from [1]",                "nord.focus-theme",     THEME_1,                  THEME_1_EXPECTED);
+    run_test("Theme from [3]",                "handmade.focus-theme", THEME_3,                  THEME_3_EXPECTED);
+
+    // NOTE: commented out because the compiler crashes when trying to execute it together with other tests. Works fine otherwise
+    // run_test("Workspace migration from [4]",  "global.focus-config",  WORKSPACE_4,              WORKSPACE_4_EXPECTED);
 }
 
 run_test :: (test_name: string, file_name: string, config_data: string, expected_data: string) {
@@ -522,9 +683,211 @@ run_test :: (test_name: string, file_name: string, config_data: string, expected
     assert(modified_data == expected_data, "%: expected data mismatch", test_name);
 }
 
+WORKSPACE_3 :: #string FOCUS_CONFIG
+[3]  # Version number. Do not delete.
+
+[[workspace]]
+
+[ignore dirs]
+# The workspace scanner will not descend into the dirs that match these names.
+.svn
+.git
+__pycache__
+
+[workspace dirs]
+# These directories will be scanned when a workspace is opened so that search etc. works.
+# Example:
+C:/projects/project1
+
+[allow file extensions]
+# These files are explicitly allowed so that the editor doesn't waste time figuring out
+# whether it should ignore these or not (if a file is not explicitly allowed or ignored,
+# it will be read to determine if it's binary or not).
+.jai .c .cpp .h .hpp .cc .cs .txt .md .focus-* .ini .super-text-file .csv .log .sql *.my-file?1* .py .m .html .xml .plist .js .jsx .ts .tsx .json .yml .yaml .toml .zig .odin
+
+[ignore file extensions]
+# Files with the following extensions will not appear in the file open dialog and won't be loaded into memory.
+# It makes sense to add all known binary file extensions here.
+.exe .pdb .ttf .otf .eot .woff *woff? .dll .lib .dylib .so *so.* .a .o .pdf
+.jpg .png .gif .jpeg .ico .tif .tiff .tga .bmp .webp  # maybe someday we'll support opening images
+.mp3 .wav .ogg .wma
+.blend .blend1 .obj .fbx .dae .3ds .dat .msh2
+.mpg .mpeg .psd .codex .webm .wma
+.zip .rar .7z
+.bin .sys .iso
+.nib .exp
+.pyc .rpyc
+.DS_Store .dmg
+*.my-ignore-file .file-ignore
+
+[file associations]
+# Optional file associations in the format `<wildcard1> <wildcard2> ... : <language>`
+# Example:
+# *.hpp *.hh *.h : cpp
+todo.txt : todo
+
+
+[[keymap]]
+
+FOCUS_CONFIG
+
+WORKSPACE_3_EXPECTED :: #string FOCUS_CONFIG
+[5]  # Version number. Do not delete.
+
+[[workspace]]
+# These directories and files will be scanned when a workspace is opened so that search etc. works.
+C:/projects/project1
+
+[ignore]
+# Files and directories matching the following wildcards will not be loaded or descended into
+# Example:
+# *.js - will ignore all files with a '.js' extension
+# tmp* - will ignore any files or directories which start with 'tmp'
+# C:/project/dirname/** - will ignore everything under `dirname`
+# C:/project/dirname/*  - will ignore all files under `dirname`, but not recursively
+.svn
+.git
+__pycache__
+*woff?
+*so.*
+*.my-ignore-file
+*.file-ignore
+
+[allow]
+# Files and directories matching the wildcards in this section will be loaded, even if they are ignored in the previous section.
+# NOTE: known binary file extensions are ignored by default (*.exe, *.obj etc.). If this is not what you want, you can explicitly allow them here.
+.focus-*
+*.super-text-file
+*.my-file?1*
+
+[file associations]
+# Optional file associations in the format `<wildcard1> <wildcard2> ... : <language>`
+# Example:
+# *.hpp *.hh *.h : cpp
+# todo.txt : todo
+todo.txt : todo
+
+
+[[keymap]]
+
+FOCUS_CONFIG
+
+PROJECT_WORKSPACE_3 :: #string FOCUS_CONFIG
+[3]  # Version number. Do not delete.
+
+[[workspace]]
+
+[ignore dirs]
+.svn
+.git
+
+[workspace dirs]
+# These directories will be scanned when a workspace is opened so that search etc. works.
+# Example:
+C:/projects/project1
+
+FOCUS_CONFIG
+
+PROJECT_WORKSPACE_3_EXPECTED :: #string FOCUS_CONFIG
+[5]  # Version number. Do not delete.
+
+[[workspace]]
+# These directories and files will be scanned when a workspace is opened so that search etc. works.
+C:/projects/project1
+
+[ignore]
+# Files and directories matching the following wildcards will not be loaded or descended into
+# Example:
+# *.js - will ignore all files with a '.js' extension
+# tmp* - will ignore any files or directories which start with 'tmp'
+# C:/project/dirname/** - will ignore everything under `dirname`
+# C:/project/dirname/*  - will ignore all files under `dirname`, but not recursively
+.svn
+.git
+
+FOCUS_CONFIG
+
+WORKSPACE_4 :: #string FOCUS_CONFIG
+[4]  # Version number. Do not delete.
+
+[[keymap]]
+[common]
+Ctrl-P                      open_file_by_name
+
+
+[[workspace]]
+
+[ignore dirs]
+# The workspace scanner will not descend into the dirs that match these names.
+.svn
+.git
+__pycache__
+
+[workspace dirs]
+# These directories will be scanned when a workspace is opened so that search etc. works.
+# Example:
+C:/projects/project1
+
+[allow file extensions]
+# These files are explicitly allowed so that the editor doesn't waste time figuring out
+# whether it should ignore these or not (if a file is not explicitly allowed or ignored,
+# it will be read to determine if it's binary or not).
+.jai .c .cpp .h .hpp .cc .cs .txt .md .focus-* .ini .super-text-file .csv .log .sql *.my-file?1* .py .m .html .xml .plist .js .jsx .ts .tsx .json .yml .yaml .toml .zig .odin
+
+[file associations]
+# Optional file associations in the format `<wildcard1> <wildcard2> ... : <language>`
+# Example:
+# *.hpp *.hh *.h : cpp
+todo.txt : todo
+*.hpp *.hh *.h : cpp
+
+
+FOCUS_CONFIG
+
+WORKSPACE_4_EXPECTED :: #string FOCUS_CONFIG
+[5]  # Version number. Do not delete.
+
+[[keymap]]
+[common]
+Ctrl-P                      open_file_by_name
+
+
+[[workspace]]
+# These directories and files will be scanned when a workspace is opened so that search etc. works.
+C:/projects/project1
+
+[ignore]
+# Files and directories matching the following wildcards will not be loaded or descended into
+# Example:
+# *.js - will ignore all files with a '.js' extension
+# tmp* - will ignore any files or directories which start with 'tmp'
+# C:/project/dirname/** - will ignore everything under `dirname`
+# C:/project/dirname/*  - will ignore all files under `dirname`, but not recursively
+.svn
+.git
+__pycache__
+
+[allow]
+# Files and directories matching the wildcards in this section will be loaded, even if they are ignored in the previous section.
+# NOTE: known binary file extensions are ignored by default (*.exe, *.obj etc.). If this is not what you want, you can explicitly allow them here.
+.focus-*
+*.super-text-file
+*.my-file?1*
+
+[file associations]
+# Optional file associations in the format `<wildcard1> <wildcard2> ... : <language>`
+# Example:
+# *.hpp *.hh *.h : cpp
+# todo.txt : todo
+todo.txt : todo
+*.hpp *.hh *.h : cpp
+
+
+FOCUS_CONFIG
+
 // Test that settings are added and removed correctly
 
-SETTINGS_1_TO_4 :: #string FOCUS_CONFIG
+SETTINGS_1 :: #string FOCUS_CONFIG
 
 [1]  # Version number. Do not delete.
 
@@ -551,20 +914,24 @@ persist_local_search_results:           false
 
 FOCUS_CONFIG
 
-SETTINGS_1_TO_4_EXPECTED :: #string FOCUS_CONFIG
-[4]  # Version number. Do not delete.
+SETTINGS_1_EXPECTED :: #string FOCUS_CONFIG
+[5]  # Version number. Do not delete.
 
 [[workspace]]
+# These directories and files will be scanned when a workspace is opened so that search etc. works.
 
-[workspace dirs]
-# These directories will be scanned when a workspace is opened so that search etc. works.
+[file associations]
+# Optional file associations in the format `<wildcard1> <wildcard2> ... : <language>`
 # Example:
+# *.hpp *.hh *.h : cpp
+# todo.txt : todo
+
 
 [[keymap]]
 [common]
 Ctrl-P                      open_file_by_name
 
-# Added after migration to version [4]
+# Added after migration to version [5]
 Ctrl-B                      toggle_build_panel
 F11                         toggle_fullscreen
 Ctrl-Tab                    switch_between_open_files
@@ -573,6 +940,7 @@ F8                          go_to_next_build_error
 Ctrl-F8                     go_to_next_build_error_on_the_side
 Shift-F8                    go_to_previous_build_error
 Shift-Ctrl-F8               go_to_previous_build_error_on_the_side
+{Shift}-Ctrl-M              jump_to_matching_bracket
 
 [[settings]]
 
@@ -584,7 +952,7 @@ prefer_system_file_dialogs:             false  # Windows only
 show_cursors_off_screen:                true
 persist_local_search_results:           false
 
-# Added after migration to version [4]
+# Added after migration to version [5]
 build_panel_height_percent:                    50
 build_panel_stays_in_one_place:                false  # if false, the build panel will flip to the inactive pane in two pane layouts
 build_panel_line_wrap_always_on:               true
@@ -599,11 +967,14 @@ show_selected_text_length:                     false
 window_width:                                  -1
 window_height:                                 -1
 insert_final_newline_on_save:                  false
-status_bar_position:                           bottom
+status_bar_position:                           bottom  # options: top, bottom
+load_most_recent_project_on_start:             false
+color_preview_popup:                           enabled  # options: enabled, minimized, disabled
+highlight_matching_brackets:                   false
 
 FOCUS_CONFIG
 
-SETTINGS_2_TO_4 :: #string FOCUS_CONFIG
+SETTINGS_2 :: #string FOCUS_CONFIG
 [2]  # Version number. Do not delete.
 
 [[workspace]]
@@ -639,14 +1010,18 @@ scroll_beyond_last_line:                true
 
 FOCUS_CONFIG
 
-SETTINGS_2_TO_4_EXPECTED :: #string FOCUS_CONFIG
-[4]  # Version number. Do not delete.
+SETTINGS_2_EXPECTED :: #string FOCUS_CONFIG
+[5]  # Version number. Do not delete.
 
 [[workspace]]
+# These directories and files will be scanned when a workspace is opened so that search etc. works.
 
-[workspace dirs]
-# These directories will be scanned when a workspace is opened so that search etc. works.
+[file associations]
+# Optional file associations in the format `<wildcard1> <wildcard2> ... : <language>`
 # Example:
+# *.hpp *.hh *.h : cpp
+# todo.txt : todo
+
 
 [[keymap]]
 [common]
@@ -657,12 +1032,13 @@ Ctrl-B                      toggle_build_panel
 F11                         toggle_fullscreen
 Ctrl-Tab                    switch_between_open_files
 
-# Added after migration to version [4]
+# Added after migration to version [5]
 Ctrl-Shift-Alt-N            open_another_editor_instance
 F8                          go_to_next_build_error
 Ctrl-F8                     go_to_next_build_error_on_the_side
 Shift-F8                    go_to_previous_build_error
 Shift-Ctrl-F8               go_to_previous_build_error_on_the_side
+{Shift}-Ctrl-M              jump_to_matching_bracket
 
 [[settings]]
 
@@ -680,7 +1056,7 @@ draw_indent_guides:                     false
 auto_surround_with_brackets_and_quotes: false
 scroll_beyond_last_line:                true
 
-# Added after migration to version [4]
+# Added after migration to version [5]
 save_current_buffer_on_build:                  false
 save_all_file_backed_buffers_on_build:         false
 disable_viewport_chasing_cursor_near_the_edge: false  # if true, the viewport will not scroll smoothly to cursor when you move the cursor outside it by small amounts
@@ -688,13 +1064,16 @@ show_selected_text_length:                     false
 window_width:                                  -1
 window_height:                                 -1
 insert_final_newline_on_save:                  false
-status_bar_position:                           bottom
+status_bar_position:                           bottom  # options: top, bottom
+load_most_recent_project_on_start:             false
+color_preview_popup:                           enabled  # options: enabled, minimized, disabled
+highlight_matching_brackets:                   false
 
 FOCUS_CONFIG
 
 // Settings should not be added to project configs, only removed
 
-PROJECT_SETTINGS_1_TO_4 :: #string FOCUS_CONFIG
+PROJECT_SETTINGS_1 :: #string FOCUS_CONFIG
 
 [1]  # Version number. Do not delete.
 
@@ -721,20 +1100,17 @@ persist_local_search_results:           false
 
 FOCUS_CONFIG
 
-PROJECT_SETTINGS_1_TO_4_EXPECTED :: #string FOCUS_CONFIG
-[4]  # Version number. Do not delete.
+PROJECT_SETTINGS_1_EXPECTED :: #string FOCUS_CONFIG
+[5]  # Version number. Do not delete.
 
 [[workspace]]
-
-[workspace dirs]
-# These directories will be scanned when a workspace is opened so that search etc. works.
-# Example:
+# These directories and files will be scanned when a workspace is opened so that search etc. works.
 
 [[keymap]]
 [common]
 Ctrl-P                      open_file_by_name
 
-# Added after migration to version [4]
+# Added after migration to version [5]
 Ctrl-B                      toggle_build_panel
 F11                         toggle_fullscreen
 Ctrl-Tab                    switch_between_open_files
@@ -743,6 +1119,7 @@ F8                          go_to_next_build_error
 Ctrl-F8                     go_to_next_build_error_on_the_side
 Shift-F8                    go_to_previous_build_error
 Shift-Ctrl-F8               go_to_previous_build_error_on_the_side
+{Shift}-Ctrl-M              jump_to_matching_bracket
 
 [[settings]]
 
@@ -759,7 +1136,7 @@ FOCUS_CONFIG
 
 // Test that new colors are added correctly
 
-COLORS_1_TO_4 :: #string FOCUS_CONFIG
+COLORS_1 :: #string FOCUS_CONFIG
   [1]   # Version number. Do not delete.
 
 [[style]]
@@ -780,8 +1157,8 @@ scrollbar_background:                   FF191F4C
 
 FOCUS_CONFIG
 
-COLORS_1_TO_4_EXPECTED :: #string FOCUS_CONFIG
-[4]   # Version number. Do not delete.
+COLORS_1_EXPECTED :: #string FOCUS_CONFIG
+[5]   # Version number. Do not delete.
 
 [[style]]
 
@@ -799,7 +1176,7 @@ background4:                            21333FFF
 scrollbar_hover:                        FFCCCC4C
 scrollbar_background:                   FF191F4C
 
-# Added after migration to version [4]
+# Added after migration to version [5]
 code_warning:                           E4D97DFF
 region_scope_export:                    15212AFF
 region_scope_file:                      15212AFF
@@ -841,7 +1218,7 @@ code_header6:                           E0AD82FF
 FOCUS_CONFIG
 
 
-COLORS_2_TO_4 :: #string FOCUS_CONFIG
+COLORS_2 :: #string FOCUS_CONFIG
   [2]   # Version number. Do not delete.
 
 [[style]]
@@ -862,8 +1239,8 @@ scrollbar_background:                   FF191F4C
 
 FOCUS_CONFIG
 
-COLORS_2_TO_4_EXPECTED :: #string FOCUS_CONFIG
-[4]   # Version number. Do not delete.
+COLORS_2_EXPECTED :: #string FOCUS_CONFIG
+[5]   # Version number. Do not delete.
 
 [[style]]
 
@@ -881,7 +1258,7 @@ background4:                            21333FFF
 scrollbar_hover:                        FFCCCC4C
 scrollbar_background:                   FF191F4C
 
-# Added after migration to version [4]
+# Added after migration to version [5]
 region_heredoc:                         10191FFF
 code_invalid:                           FF0000FF
 code_multiline_string:                  D4BC7DFF
@@ -912,7 +1289,7 @@ FOCUS_CONFIG
 
 // Test that new colors and settings are added correctly when they are both present
 
-COLORS_AND_SETTINGS_1_TO_4 :: #string FOCUS_CONFIG
+COLORS_AND_SETTINGS_1 :: #string FOCUS_CONFIG
   [1]   # Version number. Do not delete.
 
 [[workspace]]
@@ -952,14 +1329,18 @@ scrollbar_background:                   FF191F4C
 
 FOCUS_CONFIG
 
-COLORS_AND_SETTINGS_1_TO_4_EXPECTED :: #string FOCUS_CONFIG
-[4]   # Version number. Do not delete.
+COLORS_AND_SETTINGS_1_EXPECTED :: #string FOCUS_CONFIG
+[5]   # Version number. Do not delete.
 
 [[workspace]]
+# These directories and files will be scanned when a workspace is opened so that search etc. works.
 
-[workspace dirs]
-# These directories will be scanned when a workspace is opened so that search etc. works.
+[file associations]
+# Optional file associations in the format `<wildcard1> <wildcard2> ... : <language>`
 # Example:
+# *.hpp *.hh *.h : cpp
+# todo.txt : todo
+
 
 [[settings]]
 
@@ -970,7 +1351,7 @@ insert_spaces_when_pressing_tab:        true
 prefer_system_file_dialogs:             false  # Windows only
 show_cursors_off_screen:                true
 
-# Added after migration to version [4]
+# Added after migration to version [5]
 build_panel_height_percent:                    50
 build_panel_stays_in_one_place:                false  # if false, the build panel will flip to the inactive pane in two pane layouts
 build_panel_line_wrap_always_on:               true
@@ -986,7 +1367,10 @@ show_selected_text_length:                     false
 window_width:                                  -1
 window_height:                                 -1
 insert_final_newline_on_save:                  false
-status_bar_position:                           bottom
+status_bar_position:                           bottom  # options: top, bottom
+load_most_recent_project_on_start:             false
+color_preview_popup:                           enabled  # options: enabled, minimized, disabled
+highlight_matching_brackets:                   false
 
 [[keymap]]
 # ...
@@ -1007,7 +1391,7 @@ background4:                            21333FFF
 scrollbar_hover:                        FFCCCC4C
 scrollbar_background:                   FF191F4C
 
-# Added after migration to version [4]
+# Added after migration to version [5]
 code_warning:                           E4D97DFF
 region_scope_export:                    15212AFF
 region_scope_file:                      15212AFF
@@ -1049,7 +1433,7 @@ code_header6:                           E0AD82FF
 FOCUS_CONFIG
 
 
-KEYBINDS_1_TO_4 :: #string FOCUS_CONFIG
+KEYBINDS_1 :: #string FOCUS_CONFIG
 [1]  # Version number. Do not delete.
 
 [[style]]
@@ -1097,8 +1481,8 @@ Ctrl-Alt-P                  switch_to_project
 
 FOCUS_CONFIG
 
-KEYBINDS_1_TO_4_EXPECTED :: #string FOCUS_CONFIG
-[4]  # Version number. Do not delete.
+KEYBINDS_1_EXPECTED :: #string FOCUS_CONFIG
+[5]  # Version number. Do not delete.
 
 [[style]]
 
@@ -1116,7 +1500,7 @@ background4:                            21333FFF
 scrollbar_hover:                        FFCCCC4C
 scrollbar_background:                   FF191F4C
 
-# Added after migration to version [4]
+# Added after migration to version [5]
 code_warning:                           E4D97DFF
 region_scope_export:                    15212AFF
 region_scope_file:                      15212AFF
@@ -1168,7 +1552,7 @@ Ctrl-Escape                 remove_additional_cursors
 Ctrl-D                      select_word_or_create_another_cursor
 Ctrl-Shift-A                select_all_occurrences
 
-# Added after migration to version [4]
+# Added after migration to version [5]
 Alt-Shift-I                 add_cursors_to_line_ends
 Alt-Shift-Ctrl-I            add_cursors_to_line_starts
 Alt-A                       align_cursors
@@ -1187,7 +1571,7 @@ Ctrl-Tab                    switch_between_open_files
 
 Ctrl-Alt-P                  switch_to_project
 
-# Added after migration to version [4]
+# Added after migration to version [5]
 Ctrl-B                      toggle_build_panel
 F11                         toggle_fullscreen
 Ctrl-Tab                    switch_between_open_files
@@ -1196,11 +1580,12 @@ F8                          go_to_next_build_error
 Ctrl-F8                     go_to_next_build_error_on_the_side
 Shift-F8                    go_to_previous_build_error
 Shift-Ctrl-F8               go_to_previous_build_error_on_the_side
+{Shift}-Ctrl-M              jump_to_matching_bracket
 
 FOCUS_CONFIG
 
 
-KEYBINDS_2_TO_4 :: #string FOCUS_CONFIG
+KEYBINDS_2 :: #string FOCUS_CONFIG
 [2]  # Version number. Do not delete.
 
 [[keymap]]
@@ -1232,8 +1617,8 @@ Ctrl-Alt-P                  switch_to_project
 
 FOCUS_CONFIG
 
-KEYBINDS_2_TO_4_EXPECTED :: #string FOCUS_CONFIG
-[4]  # Version number. Do not delete.
+KEYBINDS_2_EXPECTED :: #string FOCUS_CONFIG
+[5]  # Version number. Do not delete.
 
 [[keymap]]
 
@@ -1262,18 +1647,19 @@ Ctrl-Tab                    switch_between_open_files
 
 Ctrl-Alt-P                  switch_to_project
 
-# Added after migration to version [4]
+# Added after migration to version [5]
 Ctrl-Shift-Alt-N            open_another_editor_instance
 F8                          go_to_next_build_error
 Ctrl-F8                     go_to_next_build_error_on_the_side
 Shift-F8                    go_to_previous_build_error
 Shift-Ctrl-F8               go_to_previous_build_error_on_the_side
+{Shift}-Ctrl-M              jump_to_matching_bracket
 
 FOCUS_CONFIG
 
 // Test that themes can be migrated properly
 
-THEME_1_TO_4 :: #string FOCUS_CONFIG
+THEME_1 :: #string FOCUS_CONFIG
   [1]   # Version number. Do not delete.
 
 [user interface]
@@ -1292,8 +1678,8 @@ scrollbar_background:                   FF191F4C
 
 FOCUS_CONFIG
 
-THEME_1_TO_4_EXPECTED :: #string FOCUS_CONFIG
-[4]   # Version number. Do not delete.
+THEME_1_EXPECTED :: #string FOCUS_CONFIG
+[5]   # Version number. Do not delete.
 
 [fonts]
 font:       default
@@ -1309,7 +1695,7 @@ background4:                            21333FFF
 scrollbar_hover:                        FFCCCC4C
 scrollbar_background:                   FF191F4C
 
-# Added after migration to version [4]
+# Added after migration to version [5]
 code_warning:                           E4D97DFF
 region_scope_export:                    15212AFF
 region_scope_file:                      15212AFF
@@ -1351,7 +1737,7 @@ code_header6:                           E0AD82FF
 FOCUS_CONFIG
 
 
-THEME_3_TO_4 :: #string FOCUS_CONFIG
+THEME_3 :: #string FOCUS_CONFIG
 [3]  # Version number. Do not delete
 
 [colors]
@@ -1421,8 +1807,8 @@ build_panel_title_bar:                  121212FF
 
 FOCUS_CONFIG
 
-THEME_3_TO_4_EXPECTED :: #string FOCUS_CONFIG
-[4]  # Version number. Do not delete
+THEME_3_EXPECTED :: #string FOCUS_CONFIG
+[5]  # Version number. Do not delete
 
 [colors]
 
@@ -1489,7 +1875,7 @@ build_panel_scrollbar_hover:            CDAA7D4C
 build_panel_scrollbar_background:       CDAA7D11
 build_panel_title_bar:                  121212FF
 
-# Added after migration to version [4]
+# Added after migration to version [5]
 code_invalid:                           FF0000FF
 code_multiline_string:                  6B8E23FF
 code_raw_string:                        6B8E23FF

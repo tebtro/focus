@@ -41,6 +41,16 @@ main :: () {
     init_buffers();
     load_global_config(fallback_to_default_on_failure = true);
 
+    window_x, window_y, window_width, window_height = platform_get_centered_window_dimensions(config.settings.open_on_the_biggest_monitor);
+
+    if config.settings.window_width  > 0 then window_width  = xx config.settings.window_width;
+    if config.settings.window_height > 0 then window_height = xx config.settings.window_height;
+    if config.settings.window_x != -1000 then window_x      = xx config.settings.window_x;
+    if config.settings.window_y != -1000 then window_y      = xx config.settings.window_y;
+
+    window_generic_title = ifx DEBUG then "Focus (debug mode)" else "Focus";
+    platform_create_window();
+
     // Process command line parameters
     focus_executable_args = get_command_line_arguments();
 
@@ -50,9 +60,10 @@ main :: () {
         project := args[2];
         success: bool;
         if ends_with(project, ".focus-config") {
-            success = load_project_config_from_path(project);
-        } else {
             success = load_project_config(project);
+        } else {
+            config_path := tprint("%/%.focus-config", projects_dir, project);
+            success = load_project_config(config_path);
         }
         if !success then add_user_error("Couldn't load project config '%' provided in the command line arguments", project);
     }
@@ -66,7 +77,7 @@ main :: () {
                 dir := trim_right(path, "\\/");
                 project_config_path := tprint("%/.focus-config", dir);
                 if !project_config.loaded && file_exists(project_config_path) {
-                    success := load_project_config_from_path(project_config_path);
+                    success := load_project_config(project_config_path);
                     if !success then add_user_error("Tried to load project config from % but couldn't due to errors", project_config_path);
                 } else {
                     array_add(*dirs_from_args, dir);
@@ -92,32 +103,26 @@ main :: () {
         if file_exists(".focus-config") {
             project_config_path, success := get_absolute_path(".focus-config",, temp);
             if success {
-                success := load_project_config_from_path(project_config_path);
+                success := load_project_config(project_config_path);
                 if !success then add_user_error("Tried to load project config from % but couldn't due to errors", project_config_path);
             }
         }
     }
 
-    // Maybe load previous session project if we haven't loaded anything yet
-    if !project_config.loaded {
+    if !project_config.loaded && !project_dirs {
         session = maybe_load_previous_session();
-        if session.project {
-            success := load_project_config(session.project);
-            if !success then add_user_error("Couldn't load project % from previous session", session.project);
+
+        // Maybe load most recent project
+        if config.settings.load_most_recent_project_on_start {
+            most_recent_projects := get_most_recent_projects();
+            if most_recent_projects {
+                success := load_project_config(most_recent_projects[0]);
+                if !success then add_user_error("Couldn't load most recent project '%'", most_recent_projects[0]);
+            }
         }
     } else {
         session = start_fresh_session();
     }
-
-    window_x, window_y, window_width, window_height = platform_get_centered_window_dimensions(config.settings.open_on_the_biggest_monitor);
-
-    if config.settings.window_width  > 0 then window_width  = xx config.settings.window_width;
-    if config.settings.window_height > 0 then window_height = xx config.settings.window_height;
-    if config.settings.window_x != -1000 then window_x      = xx config.settings.window_x;
-    if config.settings.window_y != -1000 then window_y      = xx config.settings.window_y;
-
-    window_generic_title = ifx DEBUG then "Focus (debug mode)" else "Focus";
-    platform_create_window();
 
     if project_config.loaded then update_window_title();
 
@@ -292,7 +297,7 @@ main :: () {
                 case .open_file_dialog;         handled = open_file_dialog_handle_event(event);
                 case .delete_file_dialog;       handled = delete_file_dialog_handle_event(event);
                 case .go_to_line_dialog;        handled = go_to_line_dialog_handle_event(event);
-                case .open_project_dialog;      handled = open_project_dialog_handle_event(event);
+                case .switch_to_project_dialog; handled = switch_to_project_dialog_handle_event(event);
                 case .unsaved_buffers_dialog;   handled = unsaved_buffers_dialog_handle_event(event);
                 case .confirm_overwrite_dialog; handled = confirm_overwrite_dialog_handle_event(event);
                 case .commands_dialog;          handled = commands_dialog_handle_event(event);
@@ -372,8 +377,8 @@ handle_common_editor_action :: (action: Action_Editors, placement: Editor_Placem
         case .decrease_font_size;                               decrease_font_size();                               return true;
         case .reset_font_size_to_default;                       reset_font_size_to_default();                       return true;
 
-        case .open_project;                                     #through;
-        case .switch_to_project;                                show_dialog(*open_project_dialog);                  return true;
+        case .open_project;                                     print("UNIMPLEMENTED\n");  /* !!!!!!!!!!!! */       return true;
+        case .switch_to_project;                                show_dialog(*switch_to_project_dialog);             return true;
         case .close_project;                                    close_project();                                    return true;
 
         case .choose_theme;                                     show_dialog(*theme_dialog);                         return true;
@@ -817,7 +822,8 @@ Mods :: Input.Event.Modifier_Flags;
 
 Time :: #type,isa float64;
 
-project_dirs: [..] Project_Dir;
+project_dirs:  [..] Project_Dir;
+project_files: [..] string;  // individual files added to project
 
 active_global_widget: Active_Global_Widget = .editors;
 
@@ -828,7 +834,7 @@ Active_Global_Widget :: enum {
     delete_file_dialog;
     go_to_line_dialog;
     commands_dialog;
-    open_project_dialog;
+    switch_to_project_dialog;
     unsaved_buffers_dialog;
     confirm_overwrite_dialog;
     theme_dialog;
@@ -892,6 +898,7 @@ dont_ignore_next_window_resize := false;
 #load "colors.jai";
 #load "keymap.jai";
 #load "session.jai";
+#load "projects.jai";
 #load "meow_hash.jai";
 #load "user_messages.jai";
 
@@ -903,15 +910,18 @@ dont_ignore_next_window_resize := false;
 #load "widgets/finder.jai";
 #load "widgets/unsaved_buffers.jai";
 #load "widgets/commands.jai";
-#load "widgets/open_project.jai";
+#load "widgets/switch_to_project.jai";
 #load "widgets/confirm_overwrite.jai";
 #load "widgets/theme_dialog.jai";
 #load "widgets/language_dialog.jai";
+#load "widgets/color_preview.jai";
+#load "widgets/color_picker.jai";
 
 #load "langs/common.jai";
 #load "langs/jai.jai";
 #load "langs/c.jai";
 #load "langs/cpp.jai";
+#load "langs/css.jai";
 #load "langs/csharp.jai";
 #load "langs/focus_config.jai";
 #load "langs/glsl.jai";
@@ -944,8 +954,8 @@ dont_ignore_next_window_resize := false;
     #assert false, "Unsupported OS";
 }
 
+using Basic :: #import "Basic"()(MEMORY_DEBUGGER = DEBUG);
 #import "Atomics";
-#import "Basic"()(MEMORY_DEBUGGER = DEBUG);
 #import "Compiler";
 #import "File";
 #import "File_Utilities";

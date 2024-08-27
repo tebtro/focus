@@ -1,7 +1,49 @@
 init_workspace :: () {
-    for path : config.workspace.workspace_dirs {
-        add_directory_to_workspace(path);
+    for path : config.workspace.members {
+        if file_exists(path) && !is_directory(path) {
+            add_file_to_workspace(path);
+        } else {
+            add_directory_to_workspace(path);
+        }
     }
+    // Change working directory to the first directory in the list
+    working_dir := get_working_directory_from_workspace(config.workspace.members);
+    if working_dir {
+        set_working_directory(working_dir);
+    } else {
+        set_working_directory(data_dir);
+    }
+}
+
+get_working_directory_from_workspace :: (members: [] string) -> string {
+    if members {
+        first_member := members[0];
+        if is_directory(first_member) return first_member;
+        if file_exists(first_member)  return path_strip_filename(first_member);
+    }
+    return "";
+}
+
+add_file_to_workspace :: (path: string) {
+    full_path, success := get_absolute_path(path,, temp);
+
+    if !success || !file_exists(full_path) {
+        error_msg := tprint("Couldn't add % to workspace. File doesn't exist or is invalid.", path);
+        add_user_error(error_msg, dismiss_in_seconds = 10);
+        log_error(error_msg);
+        return;
+    }
+
+    path_overwrite_separators(full_path, #char "/");
+
+    already_exists := false;
+    for project_files {
+        if platform_path_equals(full_path, it) {
+            already_exists = true;
+            break;
+        }
+    }
+    if !already_exists then array_add(*project_files, copy_string(full_path));
 }
 
 add_directory_to_workspace :: (path: string, index := -1) {
@@ -57,6 +99,7 @@ start_workspace_scan :: () {
     file_list_ready = false;
     workspace_scan_complete = false;
     array_reset(*files_to_scan);
+    for project_files  array_add(*files_to_scan, copy_string(it));
 
     // Get the list of all files in the project asynchronously (depending on the size it can cause a startup delay otherwise)
     file_list_thread_group = Thread_Group.{};  // if we don't do this it can't be reused
@@ -153,7 +196,7 @@ workspace_update :: () {
 
         visitor_func :: (file: *File_Visit_Info, userdata: *void) {
             if file.is_directory {
-                if should_ignore_dir(file.full_name) {
+                if !should_descend_into_dir(file.full_name) {
                     file.descend_into_directory = false;
                     #if DEBUG_FILE_REFRESH log("% - not descending into the directory", file.full_name);
                     return;
@@ -202,6 +245,7 @@ reload_workspace :: () {
     deinit_finder();
     hide_build_panel();
     deinit_build_system();
+    deinit_color_preview();
     deinit_open_file_dialog();
     deinit_file_watcher();
     deinit_buffers();
@@ -210,27 +254,31 @@ reload_workspace :: () {
     // Reinit things
     init_file_watcher();
     array_reset_keeping_memory(*project_dirs);
+    for project_files  free(it);
+    array_reset_keeping_memory(*project_files);
     init_workspace();
     init_buffers();
-
-    left_editor_preserved  := false;
-    right_editor_preserved := false;
 
     // Preserve all editors and buffers which belong to the new workspace. Remove the rest.
     new_open_editors: [..] Editor;
     new_open_buffers: Simple_Bucket_Array(Buffer, items_per_bucket = 1024, max_buckets = 1024);
     new_most_recent_buffers: [..] s64;
 
+    editor_id_map: Table(s64, s64);
+    editor_id_map.allocator = temp;
+
     for * buffer, old_buffer_id : open_buffers {
         buffer := *open_buffers[old_buffer_id];
         if should_keep_buffer_when_reloading_workspace(buffer) {
             new_buffer_id := new_open_buffers.count;
-            bucket_array_add(*new_open_buffers, buffer.*);
 
             if buffer.has_file {
                 table_add(*buffers_table, copy_string(buffer.file.full_path), new_buffer_id);
                 start_watching_file_if_not_already(buffer.file.full_path);
+                buffer.file = get_file_info_from_full_path(buffer.file.full_path);  // refresh file info to reflect new project dirs
             }
+
+            bucket_array_add(*new_open_buffers, buffer.*);
 
             if array_unordered_remove_by_value(*most_recent_buffers, old_buffer_id, stop_after_first = true) {
                 array_add(*new_most_recent_buffers, new_buffer_id);
@@ -245,10 +293,7 @@ reload_workspace :: () {
                 new_editor_id := new_open_editors.count;
                 array_add(*new_open_editors, new_editor);
 
-                // Check whether this is one of the visible editors
-                if editors.active == old_editor_id { editors.active = new_editor_id; }
-                if editors.left   == old_editor_id { editors.left   = new_editor_id; left_editor_preserved  = true; }
-                if editors.right  == old_editor_id { editors.right  = new_editor_id; right_editor_preserved = true; }
+                table_add(*editor_id_map, old_editor_id, new_editor_id);
             }
 
         } else {
@@ -266,35 +311,61 @@ reload_workspace :: () {
     open_buffers = new_open_buffers;
 
     // Reopen visible editors, if any of them are preserved
-    if left_editor_preserved && right_editor_preserved {
-        // Keep the layout
-    } else if left_editor_preserved {
-        editors.layout = .Single;
-        editors.right = -1;
-    } else if right_editor_preserved {
-        editors.layout = .Single;
-        editors.left = editors.right;
-        editors.right = -1;
-    } else {
-        editors = Editor_State.{};  // reset everything
+    if editors.layout != .None {
+        new_active, active_preserved := table_find(*editor_id_map, editors.active);
+        new_left,   left_preserved   := table_find(*editor_id_map, editors.left);
+        new_right,  right_preserved  := table_find(*editor_id_map, editors.right);
+
+        if active_preserved then editors.active = new_active;
+
+        if left_preserved && right_preserved {
+            // Keep the layout
+            editors.left  = new_left;
+            editors.right = new_right;
+        } else if left_preserved {
+            editors.layout = .Single;
+            editors.left   = new_left;
+            editors.right  = new_left;
+            editors.active = new_left;
+        } else if right_preserved {
+            editors.layout = .Single;
+            editors.left   = new_right;
+            editors.right  = new_right;
+            editors.active = new_right;
+        } else {
+            editors = Editor_State.{};  // reset everything
+        }
+        if editors.left == editors.right && editors.layout == .Double {
+            editors.active = editors.left;
+            editors.layout = .Single;
+        }
     }
 
     if !automatic_workspace_reload then show_open_file_dialog(.search);
 
     init_build_system();  // must do after we've cleared editors and buffers
-    update_window_title();
+
+    if editors.layout == .None {
+        update_window_title();
+    } else {
+        make_editor_active(editors.active);
+    }
 
     start_workspace_scan();
 
     clear_user_messages(.workspace);
-    add_success_message("Workspace has been reloaded", dismiss_in_seconds=3);
+    add_success_message("Workspace has been reloaded", dismiss_in_seconds = 3);
 }
 
 should_keep_buffer_when_reloading_workspace :: (using buffer: Buffer) -> bool {
-    if !has_file return false;  // if this is a special buffer we can recreate it later
+    if !has_file return false;  // if this is a special buffer we can recreate it later. If the buffer is unsaved, we're throwing it away (because the user decided not to save it)
 
-    // TODO: when we're able to add single files to project, check for that here as well!
-    return dir_is_within_project(get_parent_dir_path(file.full_path)) || is_our_config_file(file.full_path);
+    if is_our_config_file(file.full_path) return true;
+    if should_ignore_file(file.full_path) return false;
+
+    for project_files  if platform_path_equals(file.full_path, it) return true;
+
+    return dir_is_within_project(get_parent_dir_path(file.full_path));
 }
 
 start_watching_file_if_not_already :: (file_path: string) {
@@ -375,14 +446,10 @@ deinit_file_watcher :: () {
 file_list_threadproc :: (group: *Thread_Group, thread: *Thread, work: *void) -> Thread_Continue_Status {
     reset(*scan_memory_pool);
     scan_pool_allocator := get_scan_pool_allocator();
-    push_allocator(scan_pool_allocator);
 
-    maybe_add_file_to_scan_list :: (file: *File_Visit_Info, userdata: *void) {
+    maybe_add_file_to_scan_list :: (file: *File_Visit_Info, userdata: Allocator) {
         if file.is_directory {
-            if should_ignore_dir(file.full_name) {
-                file.descend_into_directory = false;
-                return;
-            }
+            if !should_descend_into_dir(file.full_name) then file.descend_into_directory = false;
             return;
         }
         if file.is_symlink return;
@@ -391,10 +458,10 @@ file_list_threadproc :: (group: *Thread_Group, thread: *Thread, work: *void) -> 
         // because it may involve reading the file and checking for zeroes,
         // and we'd rather it's done in threads (also if later we find there are no
         // zeroes in the file then the file data will be in cache ready to use)
-        array_add(*files_to_scan, copy_string(file.full_name));
+        array_add(*files_to_scan, copy_string(file.full_name,, allocator=userdata));
     }
 
-    for project_dirs visit_files(it.path, recursive = true, null, maybe_add_file_to_scan_list, visit_directories = true);
+    for project_dirs visit_files(it.path, recursive = true, scan_pool_allocator, maybe_add_file_to_scan_list, visit_directories = true);
 
     return .STOP;  // don't need you no mo
 }
@@ -455,7 +522,7 @@ file_change_callback :: (watcher: *File_Watcher(void), change: *File_Change, use
     }
 
     // If the change is in one of the ignored dirs, ignore it
-    if should_ignore_dir(change.full_path) && !is_our_config_file(change.full_path) {
+    if should_ignore_path(change.full_path) && !is_our_config_file(change.full_path) {
         #if DEBUG_FILE_REFRESH append(*b, " - ignore because of dir");
         return;
     }

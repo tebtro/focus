@@ -237,6 +237,7 @@ active_editor_handle_event :: (editor: *Editor, buffer: *Buffer, event: Input.Ev
         case .jump_to_line_end;                 move_cursors_end                    (editor, buffer);
         case .jump_to_file_start;               move_to_file_start                  (editor, buffer);
         case .jump_to_file_end;                 move_to_file_end                    (editor, buffer);
+        case .jump_to_matching_bracket;         move_to_matching_bracket            (editor, buffer, shift_pressed); keep_selection = true;
 
         case .select_line;                      select_lines                        (editor, buffer); keep_selection = true;
         case .copy;                             copy_selection_to_clipboard         (editor, buffer);
@@ -491,7 +492,7 @@ editors_show_default_config :: (placement: Editor_Placement) {
         replace_range_raw(buffer, 0, xx buffer.bytes.count, DEFAULT_CONFIG_FILE_DATA);
         buffer.meow_hash = calculate_hash(buffer.bytes);
         buffer.readonly = true;
-        buffer.deleted = true;
+        buffer.internal = true;
         buffer.lang = .Focus_Config;
         buffer.file.name = "Default Focus Config";
         buffer.file.icon = .gear;
@@ -506,6 +507,7 @@ editors_show_troubleshooting_info :: (placement: Editor_Placement) {
         global_troubleshooting_buffer_id = find_or_create_an_empty_buffer();
         buffer := *open_buffers[global_troubleshooting_buffer_id];
         buffer.readonly = true;
+        buffer.internal = true;
         buffer.lang = .Plain_Text;
         buffer.file.name = "Troubleshooting Info";
         buffer.file.icon = .debug;
@@ -1257,6 +1259,8 @@ get_lang_from_path :: (full_path: string) -> Buffer.Lang {
         case "html";            lang = .Html;
         case "htm";             lang = .Html;
         case "xhtml";           lang = .Html;
+        case "css";             lang = .Css;
+        case "scss";            lang = .Css;
 
         case "xml";             lang = .Xml;
         case "xsd";             lang = .Xml;
@@ -1266,6 +1270,10 @@ get_lang_from_path :: (full_path: string) -> Buffer.Lang {
         case "vcproj";          lang = .Xml;
         case "vcxproj";         lang = .Xml;
         case "csproj";          lang = .Xml;
+
+        case;
+            // Files named `.focus_config` are assumed to have no extension
+            if equal_nocase(basename_with_extension, ".focus-config") then lang = .Focus_Config;
     }
 
     if equal_nocase(basename_with_extension, "FOCUS-CHANGELOG.txt") then lang = .Todo;
@@ -1414,7 +1422,8 @@ restore_cursor_state :: (using editor: *Editor, cursor_state: [] Cursor) {
 
 make_editor_active :: (editor_id: s64) {
     assert(editor_id < open_editors.count, "Trying to activate editor %, but the last available one is %", editor_id, open_editors.count - 1);
-    if is_build_panel(editor_id) then build_panel_on_activate();
+    if is_build_panel(editor_id)         then build_panel_on_activate();
+
     editors.active = editor_id;
 
     buffer_id := open_editors[editor_id].buffer_id;
@@ -2151,6 +2160,27 @@ move_to_file_end :: (editor: *Editor, buffer: Buffer) {
     editor.cursor_moved = .jumped;
 }
 
+move_to_matching_bracket :: (using editor: *Editor, buffer: Buffer, keep_selection: bool) {
+    for * cursor : cursors {
+        pos: s32 = -1;
+        if is_bracket(buffer, cursor.pos) {
+            pos = cursor.pos;
+        } else if is_bracket(buffer, cursor.pos - 1) {
+            pos = cursor.pos - 1;
+        }
+        if pos < 0 continue;
+
+        offset := find_matching_bracket(buffer, pos);
+        if offset < 0 continue;
+
+        if keep_selection then cursor.sel = cursor.pos;
+        cursor.pos = offset;
+        if !keep_selection then cursor.sel = offset;
+    }
+
+    editor.cursor_moved = .jumped;
+}
+
 break_line :: (editor: *Editor, buffer: *Buffer) {
     new_edit_group(buffer, editor);
 
@@ -2510,7 +2540,7 @@ unindent_lines :: (editor: *Editor, buffer: *Buffer) {
     editor.cursor_moved = .unimportant;
 }
 
-autoindent_region :: (editor: *Editor, buffer: *Buffer, fallback := true) {
+autoindent_region :: (editor: *Editor, buffer: *Buffer) {
     // We assume that any {, [ or ( left unclosed means that the next line should be indented.
     // This is not true for Python, for example, we might handle other cases later
 
@@ -2520,8 +2550,7 @@ autoindent_region :: (editor: *Editor, buffer: *Buffer, fallback := true) {
     tokens := tokenize_for_indentation(buffer);
 
     if !tokens {
-        // Unsupported - fall back to normal indentation
-        if fallback indent_lines(editor, buffer);
+        add_user_warning("Autoindenting is not supported for % files", buffer.lang, dismiss_in_seconds = 3);
         return;
     }
 
@@ -3069,27 +3098,49 @@ paste_from_clipboard :: (editor: *Editor, buffer: *Buffer) {
     editor.cursor_moved = .large_edit;
 }
 
-toggle_comment :: (editor: *Editor, buffer: *Buffer) {
-
+toggle_comment :: (editor: *Editor, buffer: *Buffer, is_fallback := false) {
     comment: string = ---;
-    if buffer.lang == {
-        case .C;            comment = "//";
-        case .CSharp;       comment = "//";
-        case .Golang;       comment = "//";
-        case .Glsl;         comment = "//";
-        case .Hlsl;         comment = "//";
-        case .Jai;          comment = "//";
-        case .Js;           comment = "//";
-        case .Json;         comment = "//";
-        case .Lua;          comment = "--";
-        case .Odin;         comment = "//";
-        case .Focus_Config; comment = "#";
-        case .Focus_Theme;  comment = "#";
-        case .Python;       comment = "#";
-        case .RenPy;        comment = "#";
-        case .Yang;         comment = "//";
-        case .Rust;         comment = "//";
-        case;               return;
+
+    if #complete buffer.lang == {
+        case .Jai;    #through;
+        case .C;      #through;
+        case .Cpp;    #through;
+        case .CSharp; #through;
+        case .Glsl;   #through;
+        case .Hlsl;   #through;
+        case .Golang; #through;
+        case .Js;     #through;
+        case .Json;   #through;
+        case .Odin;   #through;
+        case .Rust;   #through;
+        case .Yang;   #through;
+        case .Zig;
+            comment = "//";
+
+        case .Lua;
+            comment = "--";
+
+        case .Python;       #through;
+        case .RenPy;        #through;
+        case .Focus_Config; #through;
+        case .Focus_Theme;
+            comment = "#";
+
+        // Single-line comments are not supported, fallback to multi-line comment
+        case .Css;      #through;
+        case .Xml;      #through;
+        case .Html;     #through;
+        case .Uxntal;   #through;
+        case .Markdown;
+            assert(!is_fallback, "Infinite recursion");
+            toggle_block_comment(editor, buffer, true);
+            return;
+
+        // No support for comments at all
+        case .Plain_Text;        #through;
+        case .Todo;              #through;
+        case .Focus_Build_Panel;
+            return;
     }
 
     // Get the affected lines
@@ -3150,17 +3201,32 @@ toggle_comment :: (editor: *Editor, buffer: *Buffer) {
             }
         }
 
-        if is_empty_line { line_starts[it] |= EMPTY_LINE_BIT; continue; }
-        if min_indent < 0 || indent < min_indent then min_indent = indent;
+        if is_empty_line                                      then { line_starts[it] |= EMPTY_LINE_BIT; continue; }
+        if min_indent < 0 || indent < min_indent              then min_indent = indent;
         if !add_comment && !begins_with(trimmed_str, comment) then add_comment = true;
     }
 
-    if min_indent < 0 then min_indent = 0;
+    if editor.cursors.count == 1 && !has_selection(editor.cursors[0]) && (line_starts[0] & EMPTY_LINE_BIT) {
+        // Inserts a comment at the cursor position if there's only one cursor and the current line is empty.
+
+        cursor := *editor.cursors[0];
+        insert_string_at_offset(buffer, cursor.pos, tprint("% ", comment));
+
+        cursor.pos += xx (comment.count + 1);
+        cursor.sel = cursor.pos;
+        cursor.col_wanted = -1;
+
+        editor.cursor_moved = .unimportant;
+
+        return;
+    }
 
     // Build a replacement string
     b: String_Builder;  // not using temp because the string may be too large
 
     if add_comment {
+        assert(min_indent > -1);
+
         use_spaces := config.settings.insert_spaces_when_pressing_tab;
         new_whitespace := ifx use_spaces then get_tmp_spaces(min_indent) else {
             tab_count := min_indent / TAB_SIZE; // Aligns the indentation with tab columns because of integer division.
@@ -3243,25 +3309,60 @@ toggle_comment :: (editor: *Editor, buffer: *Buffer) {
     editor.cursor_moved = .unimportant;
 }
 
-toggle_block_comment :: (editor: *Editor, buffer: *Buffer) {
-    comment_start: string;
-    comment_end:   string;
+toggle_block_comment :: (editor: *Editor, buffer: *Buffer, is_fallback := false) {
+    comment_start: string = ---;
+    comment_end:   string = ---;
 
-    if buffer.lang == {
-        case .C;            comment_start = "/*"; comment_end = "*/";
-        case .CSharp;       comment_start = "/*"; comment_end = "*/";
-        case .Golang;       comment_start = "/*"; comment_end = "*/";
-        case .Glsl;         comment_start = "/*"; comment_end = "*/";
-        case .Jai;          comment_start = "/*"; comment_end = "*/";
-        case .Js;           comment_start = "/*"; comment_end = "*/";
-        case .Json;         comment_start = "/*"; comment_end = "*/";
-        case .Odin;         comment_start = "/*"; comment_end = "*/";
-        case .Rust;         comment_start = "/*"; comment_end = "*/";
-        case .Lua;          comment_start = "--[["; comment_end = "]]";
-        case .Html;         comment_start = "<!--"; comment_end = "-->";
-        case .Xml;          comment_start = "<!--"; comment_end = "-->";
-        case .Yang;         comment_start = "/*"; comment_end = "*/";
-        case;               toggle_comment(editor, buffer); return;  // fallback to toggle_comment for the rest.
+    if #complete buffer.lang == {
+        case .Jai;    #through;
+        case .C;      #through;
+        case .Cpp;    #through;
+        case .Css;    #through;
+        case .CSharp; #through;
+        case .Glsl;   #through;
+        case .Hlsl;   #through;
+        case .Golang; #through;
+        case .Js;     #through;
+        case .Json;   #through;
+        case .Odin;   #through;
+        case .Rust;   #through;
+        case .Yang;
+            comment_start = "/*";
+            comment_end   = "*/";
+
+        case .Lua;
+            comment_start = "--[[";
+            comment_end   = "]]";
+
+        case .Xml;  #through;
+        case .Html;
+            comment_start = "<!--";
+            comment_end   = "-->";
+
+        case .Uxntal;
+            comment_start = "(";
+            comment_end   = ")";
+
+        // Available with extensions
+        case .Markdown;
+            comment_start = "<!---";
+            comment_end   = "--->";
+
+        // Muilti-line comments are not supported, fallback to multiple single-line comments
+        case .Python;       #through; // Yes, we could use multi-line strings but they have to be properly indented, so let's just fallback to several single-line comments and not to create more headache
+        case .RenPy;        #through; // Yeah, there is a trick but meh (https://lemmasoft.renai.us/forums/viewtopic.php?p=299664#p299664 in case someone would like to implement it)
+        case .Zig;          #through;
+        case .Focus_Config; #through;
+        case .Focus_Theme;
+            assert(!is_fallback, "Infinite recursion");
+            toggle_comment(editor, buffer, true);
+            return;
+
+        // No support for comments at all
+        case .Plain_Text;        #through;
+        case .Todo;              #through;
+        case .Focus_Build_Panel;
+            return;
     }
 
     remove_comment := true;
@@ -3341,8 +3442,19 @@ toggle_block_comment :: (editor: *Editor, buffer: *Buffer) {
         for * cursor : editor.cursors {
             move_count := cast(s32)it_index * comment_total_length;
 
-            start_pos := min(cursor.pos, cursor.sel) + move_count;
-            end_pos   := max(cursor.pos, cursor.sel) + move_count + comment_start.count;
+            selection := get_selection(cursor);
+
+            // If it's a fallback we want to comment out lines entirely, not just selection (as we do in toggle_comment)
+            if is_fallback {
+                selection_start_line_index := offset_to_real_line(buffer, selection.start);
+                selection_end_line_index   := offset_to_real_line(buffer, selection.end);
+
+                selection.start = get_real_line_start_offset(buffer, selection_start_line_index);
+                selection.end   = get_real_line_end_offset(buffer, selection_end_line_index);
+            }
+
+            start_pos := selection.start + move_count;
+            end_pos   := selection.end   + move_count + comment_start.count;
 
             insert_string_at_offset(buffer, start_pos, comment_start);
             insert_string_at_offset(buffer, end_pos,   comment_end);
@@ -3742,9 +3854,7 @@ move_to_editor_history_frame :: (frame: Editor_History_Frame, old_frame: Editor_
     } else if old_frame.layout == .Double && frame.layout == .Single {
         // Closing a pane
         if (frame.active == old_frame.left || frame.active == old_frame.right) {
-
             editor_closing_id = frame.active;
-
             editors.layout = .Double;  // will change when the animation finishes
             if frame.active == old_frame.left {
                 editors.right = old_frame.right;  // make sure we're drawing the correct buffer while it closes

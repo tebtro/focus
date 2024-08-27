@@ -143,7 +143,7 @@ offset_to_real_coords :: (buffer: Buffer, offset: s64) -> Coords {
 
 // This function counts visual indent, taking tab size into account
 _get_visual_col_by_scanning_line :: (buffer: Buffer, line_num: s32, offset: s64, line_starts: [] s32) -> col: s32 {
-    return num_chars_in_string(xx array_view(buffer.bytes, line_starts[line_num], offset - line_starts[line_num]));
+    return num_cols_in_string(xx array_view(buffer.bytes, line_starts[line_num], offset - line_starts[line_num]));
 }
 
 get_cursor_coords :: (editor: Editor, buffer: Buffer, using cursor: Cursor) -> Cursor_Coords {
@@ -249,6 +249,10 @@ is_last_line :: (editor: Editor, buffer: Buffer, line: s32) -> bool {
 
 is_last_real_line :: (using buffer: Buffer, line: s32) -> bool {
     return line >= line_starts.count - 2;
+}
+
+get_real_line_range :: inline (buffer: Buffer, line: s32) -> Offset_Range {
+    return .{ start = get_real_line_start_offset(buffer, line), end = get_real_line_end_offset(buffer, line) };
 }
 
 get_real_line_start_offset :: inline (using buffer: Buffer, line: s32) -> s32 {
@@ -442,7 +446,7 @@ retokenize :: (buffer: *Buffer) {
     tokenize_func := get_tokenize_function(buffer.lang);
 
     // Resize tokens if we ever changed the token array
-    if buffer.tokens || tokenize_func != null then array_resize(*buffer.tokens, buffer.bytes.count);  // this will reset tokens to 0
+    if buffer.tokens || tokenize_func != null then array_resize(*buffer.tokens, buffer.bytes.count, initialize = true);
     if !tokenize_func return;  // this could be the case for e.g. the build panel
 
     new_regions := tokenize_func(buffer);
@@ -477,6 +481,7 @@ tokenize_for_indentation :: (buffer: *Buffer) -> [] Indentation_Token /* temp */
         case .CSharp;       return tokenize_csharp_for_indentation(buffer);
         case .C;            return tokenize_c_like_lang_for_indentation(buffer, get_next_c_token);
         case .Cpp;          return tokenize_c_like_lang_for_indentation(buffer, get_next_cpp_token);
+        case .Css;          return tokenize_c_like_lang_for_indentation(buffer, get_next_css_token);
         case .Js;           return tokenize_c_like_lang_for_indentation(buffer, get_next_js_token);
         case .Json;         return tokenize_c_like_lang_for_indentation(buffer, get_next_json_token);
         case .Glsl;         return tokenize_c_like_lang_for_indentation(buffer, get_next_glsl_token);
@@ -587,6 +592,60 @@ find_next_indentation_token :: (tokens: [] Indentation_Token, offset: s32, limit
     return .{}, -1;
 }
 
+is_bracket :: (using buffer: Buffer, pos: s32) -> bool, direction: int = 0 {
+    if pos < 0 || pos >= bytes.count return false;
+
+    if !tokens || tokens[pos] != .punctuation return false;
+
+    if bytes[pos] == {
+        case #char "{";  return true,  1;
+        case #char "[";  return true,  1;
+        case #char "(";  return true,  1;
+        case #char "}";  return true, -1;
+        case #char "]";  return true, -1;
+        case #char ")";  return true, -1;
+    }
+
+    return false;
+}
+
+find_matching_bracket :: (using buffer: Buffer, pos: s32) -> index: s32 {
+    valid, direction := is_bracket(buffer, pos);
+    if !valid return -1;
+
+    bracket := bytes[pos];
+    matching_bracket := get_balancing_char(bracket, include_closing = true);
+
+    balance := 0;
+    if direction < 0 {
+        for < i : pos .. 0 {
+            if tokens[i] != .punctuation continue;
+
+            byte := bytes[i];
+            if byte == bracket {
+                balance += 1;
+            } else if byte == matching_bracket {
+                balance -= 1;
+                if balance == 0 return xx i;
+            }
+        }
+    } else if direction > 0 {
+        for i : pos .. bytes.count - 1 {
+            if tokens[i] != .punctuation continue;
+
+            byte := bytes[i];
+            if byte == bracket {
+                balance += 1;
+            } else if byte == matching_bracket {
+                balance -= 1;
+                if balance == 0 return xx i;
+            }
+        }
+    }
+
+    return -1;
+}
+
 offset_is_within_multiline_token :: (tokens: [] Indentation_Token, offset: s32) -> bool {
     token := find_closest_indentation_token(tokens, offset);
     return token.type == .maybe_multiline && (token.start + token.len) >= offset;
@@ -646,6 +705,9 @@ save_buffer_to_file :: (buffer: *Buffer, buffer_id: s64, file_path: string) {
 
         reroute_active_editor(buffer_id, new_id);
         update_window_title(open_editors[editors.active].buffer_id);
+
+        array_ordered_remove_by_value(*most_recent_buffers, new_id);
+        array_insert_at(*most_recent_buffers, new_id, 0);
     }
 
     start_watching_file_if_not_already(file_path);
@@ -779,9 +841,9 @@ strip_trailing_whitespace :: (using buffer: *Buffer, buffer_id: s64) {
 
         pos, sel := coords.pos, coords.sel;
         pos.line = clamp(pos.line, 0, max_line);
-        pos.col  = clamp(pos.col,  0, num_chars_in_string(get_real_line_as_string(buffer, pos.line)));
+        pos.col  = clamp(pos.col,  0, num_cols_in_string(get_real_line_as_string(buffer, pos.line)));
         sel.line = clamp(sel.line, 0, max_line);
-        sel.col  = clamp(sel.col,  0, num_chars_in_string(get_real_line_as_string(buffer, sel.line)));
+        sel.col  = clamp(sel.col,  0, num_cols_in_string(get_real_line_as_string(buffer, sel.line)));
 
         cursor := *editor.cursors[cursor_id];
         cursor.pos = real_coords_to_offset(buffer, pos);
@@ -935,7 +997,8 @@ get_buffer_name :: (buffer: Buffer) -> string {
 
     for 0..buffer.line_starts.count-2 {
         line := trim(get_real_line_as_string(buffer, xx it), "\t \r\n");
-        name := replace(line, "\t", " ");  // remove tabs from the middle
+        name := copy_temporary_string(line);
+        replace_chars(name, "\t", xx #char " ");  // remove tabs from the middle
         if name return take_first_n_chars(name, min(50, name.count));
     }
 
@@ -1081,6 +1144,19 @@ free_buffer :: (using buffer: *Buffer) {
     array_free(cursors);
 
     if has_file && file.full_path then free(file.full_path);
+
+    free_buffer_extra(extra);
+    extra = null;
+}
+
+free_buffer_extra :: (extra: *Buffer.Extra) {
+    if !extra return;
+    if #complete extra.type == {
+        case .focus_config;
+            config_extra := cast(*Focus_Config_Extra) extra;
+            array_free(config_extra.parsed_colors);
+    }
+    free(extra);
 }
 
 // NOTE: this works with absolute columns only, with no regard to line wrapping!
@@ -1117,7 +1193,7 @@ unsaved_buffers_exist :: () -> bool {
     // Perhaps we should create an unsaved buffers microservice,
     // which would tell us if they exist in a O(1) time?
     for open_buffers {
-        if it.modified return true;
+        if it.modified && !it.internal return true;
     }
     return false;
 }
@@ -1189,6 +1265,7 @@ get_tokenize_function :: (lang: Buffer.Lang) -> Tokenize_Function {
         case .Jai;                  return tokenize_jai;
         case .C;                    return tokenize_c;
         case .Cpp;                  return tokenize_cpp;
+        case .Css;                  return tokenize_css;
         case .CSharp;               return tokenize_csharp;
         case .Glsl;                 return tokenize_glsl;
         case .Hlsl;                 return tokenize_hlsl;
@@ -1327,6 +1404,7 @@ Buffer :: struct {
     modified               := false;
     modified_on_disk       := false;
     deleted                := false;
+    internal               := false;  // e.g. build panel, default config etc.
     needs_tokenizing       := false;
     readonly               := false;
     binary                 := false;
@@ -1346,6 +1424,16 @@ Buffer :: struct {
     edit_notifications: [..] Edit_Notification;  // TODO: make it a global array for all buffers instead
 
     lang: Lang = .Plain_Text;
+
+    // A pointer to arbitrary buffer information.
+    // Would be nice to be able to avoid using it if another way of attaching info to buffers is better. We'll see what the use patterns are.
+    extra: *Extra = null;
+
+    Extra :: struct {
+        type: Extra_Type;
+        // ...
+    }
+    Extra_Type :: enum { focus_config; }
 
     Edit_Group :: struct {
         edits: [] Edit;
@@ -1391,6 +1479,7 @@ Buffer :: struct {
         Jai;
         C;
         Cpp;
+        Css;
         CSharp;
         Glsl;
         Hlsl;
@@ -1413,6 +1502,15 @@ Buffer :: struct {
         Focus_Theme;
         Focus_Build_Panel;  // a fake lang to be assigned to the build panel instead of Plain_Text so that its tokens are preserved
     };
+}
+
+Focus_Config_Extra :: struct {
+    using #as base: Buffer.Extra;
+    base.type = .focus_config;
+
+    parsed_colors: [] Parsed_Color;
+    colors_section_start := -1;
+    colors_section_end   := -1;
 }
 
 Cursor :: struct {

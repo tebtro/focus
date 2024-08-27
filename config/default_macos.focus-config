@@ -1,38 +1,25 @@
-[4]  # Version number. Do not delete.
+[5]  # Version number. Do not delete.
 
 [[workspace]]
-
-[workspace dirs]
-# These directories will be scanned when a workspace is opened so that search etc. works.
+# These directories and files will be scanned when a workspace is opened so that search etc. works.
 # Example:
-# /Users/my_name/projects/my_project
+# /Users/my_name/projects/my_project  # <- the first directory in the list becomes the working directory
 # /Users/my_name/jai
+# src  # <- this would be relative to the config file location
 
-[ignore dirs]
-# The workspace scanner will not descend into the dirs that match these names.
+[ignore]
+# Files and directories matching the following wildcards will not be loaded or descended into
+# Example:
+# *.js - will ignore all files with a '.js' extension
+# tmp* - will ignore any files or directories which start with 'tmp'
+# /Users/my_name/project/dirname/** - will ignore everything under `dirname`
+# /Users/my_name/project/dirname/*  - will ignore all files under `dirname`, but not recursively
 .svn
 .git
-__pycache__
 
-[allow file extensions]
-# These files are explicitly allowed so that the editor doesn't waste time figuring out
-# whether it should ignore these or not (if a file is not explicitly allowed or ignored,
-# it will be read to determine if it's binary or not).
-.jai .c .cpp .h .hpp .cc .cs .txt .md .focus-* .ini .csv .log .sql .py .m .html .xml .plist .js .jsx .ts .tsx .json .yml .yaml .toml .zig .odin
-
-[ignore file extensions]
-# Files with the following extensions will not appear in the file open dialog and won't be indexed.
-# It makes sense to add all known binary file extensions here.
-.exe .pdb .ttf .otf .eot .woff *woff? .dll .lib .dylib .so *so.* .a .o .pdf
-.jpg .png .gif .jpeg .ico .tif .tiff .tga .bmp .webp  # maybe someday we'll support opening images
-.mp3 .wav .ogg .wma
-.blend .obj .fbx .dae .3ds .dat .msh2
-.mpg .mpeg .psd .codex .webm .wma
-.zip .rar .7z
-.bin .sys .iso
-.nib .exp
-.pyc .rpyc
-.DS_Store .dmg
+[allow]
+# Files and directories matching the wildcards in this section will be loaded, even if they are ignored in the previous section.
+# NOTE: known binary file extensions are ignored by default (*.so, *.pdb etc.). If this is not what you want, you can explicitly allow them here.
 
 [file associations]
 # Optional file associations in the format `<wildcard1> <wildcard2> ... : <language>`
@@ -48,8 +35,11 @@ open_on_the_biggest_monitor:            false
 cursor_as_block:                        true
 cursor_blink_time_in_seconds:           5
 highlight_selection_occurrences:        true
+highlight_line_with_cursor:             false
+highlight_matching_brackets:            false
 disable_that_annoying_paste_effect:     false
 disable_file_open_close_animations:     false
+tab_size:                               4
 insert_spaces_when_pressing_tab:        true
 strip_trailing_whitespace_on_save:      false
 smooth_scrolling:                       true
@@ -57,30 +47,31 @@ scroll_beyond_last_line:                true
 double_shift_to_search_in_workspace:    false
 can_cancel_go_to_line:                  true
 copy_whole_line_without_selection:      false
-tab_size:                               4
 line_height_scale_percent:              120
 max_editor_width:                       -1
 editor_history_size:                    1024
 line_wrap_is_on_by_default:             false
 show_line_numbers:                      false
+show_selected_text_length:              false
 hide_mouse_when_typing:                 false
-highlight_line_with_cursor:             false
 draw_indent_guides:                     false
 auto_surround_with_brackets_and_quotes: false
 auto_close_brackets:                    false
 show_cursors_off_screen:                true
 persist_local_search_results:           false  # if true, search results will stay highlighted and you have to dismiss them using the `escape` action
+load_most_recent_project_on_start:      false
 
 build_panel_stays_in_one_place:         false  # if true, the build panel will flip to the inactive pane in two pane layouts
 build_panel_line_wrap_always_on:        true
 build_panel_width_percent:              50
 build_panel_height_percent:             50
 
-status_bar_position:                    bottom # valid positions: top, bottom
+status_bar_position:                    bottom   # options: top, bottom
+color_preview_popup:                    enabled  # options: enabled, minimized, disabled
 
 
 # [[build commands]]
-# build_working_dir:      <build working dir for all commands>
+# build_working_dir:      <build working dir for all commands>  # <- paths relative to the workspace working dir (the first one in the list) are allowed
 # open_panel_on_build:    true  #  <- any settings specified here will apply to all commands unless overridden
 # close_panel_on_success: false
 # clear_build_output_before_running: false
@@ -105,18 +96,19 @@ status_bar_position:                    bottom # valid positions: top, bottom
 # key_binding:            F9
 
 
-# Example error regexes:
-# For jai:  ^(?P<file>.*):(?P<line>\d+),(?P<col>\d+): (?P<type>Error|Warning|Info|...):* (?P<msg>.*)|^(?P<msg1>.*error LNK.*)
+# For jai:    ^(?P<file>.*):(?P<line>\d+),(?P<col>\d+): (?P<type>Error|Warning|Info|...):* (?P<msg>.*)|^(?P<msg1>.*error LNK.*)
+# For golang: ^(?P<file>.*):(?P<line>\d+):(?P<col>\d+): (?P<msg>.*)$
 # ... let us know what regex works for you and we'll add it here
 
 # NOTE:
-# You can use the following variables in build_command or run_command:
+# You can use the following variables in build commands:
 # %FILE%      - full path to currenly active file
 # %FILE_DIR%  - the directory of the currently active file
 # %FILE_NAME% - current file name, with extension
 # %FILE_NAME_NO_EXTENSION% - current file name, without extension
-# %BUILD_WORKING_DIR% - working dir of the build command
-# %RUN_WORKING_DIR%   - working dir of the run command
+# %BUILD_WORKING_DIR%  - working dir of the build command
+# %RUN_WORKING_DIR%    - working dir of the run command
+# %PROJECT_CONFIG_DIR% - the dir containing the active project config file
 
 
 [[keymap]]
@@ -301,6 +293,7 @@ Cmd-B                           toggle_build_panel
 {Shift}-End                     jump_to_line_end
 {Shift}-Cmd-Home                jump_to_file_start
 {Shift}-Cmd-End                 jump_to_file_end
+{Shift}-Cmd-M                   jump_to_matching_bracket
 
 {Shift}-Backspace               delete_left_char
 {Shift}-Delete                  delete_right_char
