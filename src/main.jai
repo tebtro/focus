@@ -176,7 +176,7 @@ main :: () {
         press_count := 0;
     };
 
-    while !should_quit {
+    while true {
         if !redraw_requested platform_wait_message();
 
         Input.update_window_events();
@@ -208,9 +208,6 @@ main :: () {
 
         update_mouse_state();
 
-        screen_with_title_bar := screen;
-        screen_with_title_bar.h += 200;  // should be enough to include the title bar
-
         redraw_requested = false;
         window_resized   = false;
         dont_scroll_this_frame = false;
@@ -239,12 +236,10 @@ main :: () {
         }
 
         for event : Input.events_this_frame {
-            if should_quit break;  // don't process any other events we might have in this frame if the previous one set this to true
-
             // General events
             if event.type == {
                 case .QUIT;
-                    should_quit = true;
+                    defer_action_quit();
 
                 case .KEYBOARD;
                     // Double shift click
@@ -315,16 +310,21 @@ main :: () {
             }
 
             if handled && event.type == .KEYBOARD then num_text_input_events_to_ignore = event.text_input_count;
+            #if OS == .MACOS {
+                // @Hack:
+                // On macOS the shortcut Cmd-Q seems to be handled by the system.
+                // If the user presses Cmd-Q, we first get a normal .KEYBOARD and a .TEXT_INPUT events, then a .QUIT event.
+                // Since we're not handling the .KEYBOARD event, we're not ignoring the following .TEXT_INPUT, which
+                // sometimes results in the letter q being pressed.
+                // Unless there's a good simple way to avoid that we have to filter it out ourselves
+                if event.type == .KEYBOARD && event.key_code == #char "Q" && event.key_pressed && event.cmd_meta_pressed then num_text_input_events_to_ignore += 1;
+            }
 
             key_sequence_input_process_event(event, handled);
         }
 
-        if should_quit && unsaved_buffers_exist() && !force_quit {
-            show_unsaved_buffers_dialog();
-            should_quit = false;
-        }
+        execute_deferred_actions();
 
-        process_buffer_save_queue();
         build_system_update();
         maybe_revert_temporary_theme();
         refresh_open_buffers();
@@ -333,16 +333,7 @@ main :: () {
 
         pointer_end_frame();
 
-        // TODO:
-        // maybe_save_editor_state_into_session();
-
         maybe_save_editor_history();
-
-        if should_reload_workspace {
-            reload_workspace();
-            should_reload_workspace = false;
-            redraw_requested = true;
-        }
 
         reset_temporary_storage();
 
@@ -354,6 +345,8 @@ main :: () {
         }
 
         // #if DEBUG FrameMark();
+
+        if should_quit break;
 
         sleep_duration := get_sleep_duration(*dynamic_fps_state);
         sleep_milliseconds(sleep_duration);
@@ -369,7 +362,7 @@ main :: () {
 
 handle_common_editor_action :: (action: Action_Editors, placement: Editor_Placement = .in_place) -> handled: bool {
     if action == {
-        case .quit;                                             should_quit = true;                                 return true;
+        case .quit;                                             defer_action_quit();                                return true;
 
         case .open_another_editor_instance;                     open_another_editor_instance();                     return true;
 
@@ -714,15 +707,11 @@ fullscreen_state: Saved_Window_Info;
 
 redraw_requested            := true;  // set to true to render the first frame
 should_quit                 := false;
-force_quit                  := false;
-should_reload_workspace     := false;
-automatic_workspace_reload  := false;
 
 frame_time: Apollo_Time;          // ever-increasing time since start in seconds
 frame_dt:   Time = MAX_FRAME_DT;  // time delta since the last frame
 MAX_FRAME_DT:   Time : xx (1.0 / 30);
 QUICK_FRAME_DT: Time : xx (1.0 / 500);  // sorry 300Hz monitor users
-// MAX_TIME_BEFORE_RESETTING: Time : xx (60 * 60 * 24 * 7);  // reset timer after a week to avoid losing timer precision
 
 EDIT_GROUP_TIMEOUT :: 0.3;  // for undo/redo
 
@@ -818,6 +807,12 @@ scrollbar_size:             float;
 
 dont_scroll_this_frame := false;  // because e.g. a mouse wheel event has been handled
 
+// This will be set to `true` in `refresh_config()` to signal that the
+// next window resize event should be handled even if the window doesn't actually
+// change size. This is needed when changing DPI/scaling options which require
+// a full repaint.
+dont_ignore_next_window_resize := false;
+
 Mods :: Input.Event.Modifier_Flags;
 
 Time :: #type,isa float64;
@@ -875,12 +870,6 @@ cpu_info: Cpu_X86;
 
 focus_allocator: Allocator;
 
-// This will be set to `true` in `refresh_config()` to signal that the
-// next window resize event should be handled even if the window doesn't actually
-// change size. This is needed when changing DPI/scaling options which require
-// a full repaint.
-dont_ignore_next_window_resize := false;
-
 
 #load "layout.jai";
 #load "editors.jai";
@@ -901,6 +890,7 @@ dont_ignore_next_window_resize := false;
 #load "projects.jai";
 #load "meow_hash.jai";
 #load "user_messages.jai";
+#load "deferred_actions.jai";
 
 #load "widgets/generic_choice_dialog.jai";
 #load "widgets/text_input.jai";
