@@ -90,7 +90,7 @@ finder_open_from_editor :: () {
     if editor && editor.cursors.count == 1 {
         cursor := editor.cursors[0];
         selected_text := get_selected_string(cursor, buffer);
-        if selected_text && selected_text != cast(string) finder.input.text && offset_to_line(editor, buffer, cursor.pos) == offset_to_line(editor, buffer, cursor.sel) {
+        if selected_text && selected_text != to_string(finder.input.text) && offset_to_line(editor, buffer, cursor.pos) == offset_to_line(editor, buffer, cursor.sel) {
             replace_text(*finder.input, selected_text);
             reset_results();
             start_new_search();
@@ -237,7 +237,7 @@ start_new_search :: (force := false) {
         reset_results();
         return;
     }
-    new_needle := cast(string) input.text;
+    new_needle := to_string(input.text);
 
     if request.needle == new_needle && !force return;  // needle hasn't changed, no need to repeat
 
@@ -330,7 +330,7 @@ search_threadproc :: (group: *Thread_Group, thread: *Thread, work: *void) -> Thr
 }
 
 find_all_using_regex :: (using task: *Search_Task, regex: re.Regexp, buffer: Buffer, buffer_id: s32, buffer_sort_key: u64) {
-    buffer_str := cast(string) buffer.bytes;
+    buffer_str := to_string(buffer.bytes);
 
     while true {
         if buffer_str.count <= 0 break;
@@ -365,7 +365,7 @@ find_all_using_regex :: (using task: *Search_Task, regex: re.Regexp, buffer: Buf
 }
 
 find_all :: (using task: *Search_Task, buffer: Buffer, buffer_id: s32, buffer_sort_key: u64) {
-    buffer_str := cast(string) buffer.bytes;
+    buffer_str := to_string(buffer.bytes);
     offset := 0;
 
     while true {
@@ -450,7 +450,7 @@ Finder :: struct {
     per_page := 10;
 
     scroll_y: s32;
-    scroll_anim := #run Tween_Animation(s32).{ speed = xx 0.1, func = .lerp };
+    scroll_anim := #run Tween_Animation(s32).{ speed = 0.1, func = .lerp };
     scroll_to_cursor: Scroll_Mode = .no;
 
     width_percentage := WIDTH_NORMAL;  // how much of the screen the popup occupies
