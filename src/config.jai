@@ -1,4 +1,4 @@
-CURRENT_CONFIG_VERSION :: 5;
+CURRENT_CONFIG_VERSION :: 6;
 
 load_global_config :: (fallback_to_default_on_failure := false, force := false) -> success: bool, changed: bool, there_were_warnings: bool {
     config_path := tprint("%/global.focus-config", config_dir);
@@ -72,12 +72,6 @@ load_project_config :: (file_path: string, force := false) -> success: bool, cha
 }
 
 refresh_config :: (path: string) {
-    if build_command_is_running() {
-        // TODO: show another dialog here
-        add_user_warning("Couldn't refresh config because a build command is currently running. Please let it finish or kill it before refreshing config.");
-        return;
-    }
-
     // Deep copy old workspace members and allow/ignore lists (they will be freed by the load config function otherwise)
     old_workspace_members: [..] string;
     old_workspace_members.allocator = temp;
@@ -556,13 +550,13 @@ Settings :: struct {
     highlight_selection_occurrences                         := true;
     highlight_line_with_cursor                              := false;
     highlight_matching_brackets                             := false;
-    disable_that_annoying_paste_effect                      := false;
+    show_paste_effect                                       := true;
     disable_file_open_close_animations                      := false;
     disable_viewport_chasing_cursor_near_the_edge           := false;
     double_shift_to_search_in_workspace                     := false;
     tab_size                                                := 4;
     insert_spaces_when_pressing_tab                         := true;
-    strip_trailing_whitespace_on_save                       := false;
+    strip_trailing_whitespace_on_save                       := Strip_Trailing_Whitespace.except_lines_with_cursor;
     insert_final_newline_on_save                            := false;
     smooth_scrolling                                        := true;
     scroll_beyond_last_line                                 := true;
@@ -611,6 +605,12 @@ Status_Bar_Position :: enum {
     top;
 }
 
+Strip_Trailing_Whitespace :: enum {
+    except_lines_with_cursor;
+    all;
+    disabled;
+}
+
 Color_Preview_Popup :: enum {
     enabled;
     minimized;
@@ -620,6 +620,7 @@ Color_Preview_Popup :: enum {
 Projects_Sorting_Order :: enum {
     most_recent_first;
     alphabetical;
+    alphabetical_no_case;
 }
 
 Keymap :: struct {
