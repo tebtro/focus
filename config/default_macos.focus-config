@@ -140,6 +140,8 @@ Opt-ArrowDown                   move_selected_lines_down
 Cmd-J                           join_lines
 Cmd-Shift-J                     join_lines_no_spaces_in_between
 
+Cmd-U                           change_case_cycle
+
 Tab                             indent_or_go_to_next_tabstop
 Shift-Tab                       unindent
 
@@ -192,6 +194,8 @@ Cmd-Shift-N                     create_new_file_on_the_side
 
 Opt-Shift-ArrowUp               create_cursor_above
 Opt-Shift-ArrowDown             create_cursor_below
+Opt-Shift-ArrowLeft             create_cursors_around
+Opt-Shift-ArrowRight            select_word_or_create_another_cursor
 Opt-Cmd-A                       align_cursors
 
 Opt-Cmd-Z                       toggle_line_wrap
@@ -318,8 +322,11 @@ Shift-Cmd-F8                    go_to_previous_build_error_on_the_side
 [[style]]
 
 [fonts]
-font:       default
-font_size:  14
+font:         default
+font_ui:      default
+font_ui_bold: default
+font_size:    14
+font_ui_size: 15
 
 [colors]
 background0:                            15212AFF

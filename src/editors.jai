@@ -219,6 +219,7 @@ active_editor_handle_event :: (editor: *Editor, buffer: *Buffer, event: Input.Ev
         case .select_all;                       select_all                          (editor, buffer);           keep_selection = true;
         case .create_cursor_above;              create_cursor                       (editor, buffer, .above);   keep_selection = true;
         case .create_cursor_below;              create_cursor                       (editor, buffer, .below);   keep_selection = true;
+        case .create_cursors_around;            create_cursors_around               (editor, buffer);           keep_selection = true;
         case .strip_trailing_whitespace;        strip_trailing_whitespace           (buffer, editor.buffer_id); keep_selection = true;
 
         case .choose_language;                  show_dialog                         (*language_dialog);
@@ -296,6 +297,11 @@ active_editor_handle_event :: (editor: *Editor, buffer: *Buffer, event: Input.Ev
             case .undo;                             undo                                (editor, buffer); keep_selection = true;
             case .redo;                             redo                                (editor, buffer); keep_selection = true;
             case .align_cursors;                    align_cursors                       (editor, buffer); keep_selection = true;
+
+            case .change_case_to_upper;             change_case_of_selected_text        (editor, buffer, .upper); keep_selection = true;
+            case .change_case_to_lower;             change_case_of_selected_text        (editor, buffer, .lower); keep_selection = true;
+            case .change_case_to_caps;              change_case_of_selected_text        (editor, buffer, .caps);  keep_selection = true;
+            case .change_case_cycle;                change_case_of_selected_text        (editor, buffer, .cycle); keep_selection = true;
 
             case .delete_left_char;                 delete_left_char                    (editor, buffer);
             case .delete_right_char;                delete_right_char                   (editor, buffer);
@@ -485,7 +491,7 @@ refresh_all_editors_for_buffer :: (buffer_id: s64) {
     }
 }
 
-editors_open_file :: (path: string, placement: Editor_Placement = .in_place) -> success: bool {
+editors_open_file :: (path: string, placement: Editor_Placement = .in_place, line := -1) -> success: bool {
     full_path, success := get_absolute_path(path,, temp);
     path_overwrite_separators(full_path, separator = #char "/");
     if !file_exists(full_path) || !success {
@@ -503,6 +509,12 @@ editors_open_file :: (path: string, placement: Editor_Placement = .in_place) -> 
     start_watching_file_if_not_already(full_path);
 
     editors_open_buffer(buffer_id, placement);
+
+    if line != -1 {
+        editor, buffer := get_active_editor_and_buffer();
+        go_to_line(editor, buffer, line, 1);
+    }
+
     return true;
 }
 
@@ -1585,11 +1597,16 @@ create_cursor :: (using editor: *Editor, buffer: Buffer, where: enum { above; be
         cursor := *cursors[cursors.count-1];
 
         pos_coords := offset_to_coords(editor, buffer, cursor.pos);
-        if where == .above then pos_coords.line -= 1; else pos_coords.line += 1;
-        pos_coords.col = original_pos_coords.col;
+        while true {
+            if where == .above then pos_coords.line -= 1; else pos_coords.line += 1;
+            pos_coords.col = original_pos_coords.col;
 
-        cursor.pos = coords_to_offset(editor, buffer, pos_coords);
-        cursor.col_wanted = original_pos_coords.col;
+            cursor.pos = coords_to_offset(editor, buffer, pos_coords);
+            cursor.col_wanted = original_pos_coords.col;
+
+            if cursor.pos <= 0 || cursor.pos >= buffer.bytes.count || original_pos_coords.col == 0 || offset_to_coords(editor, buffer, cursor.pos).col > 0
+                break;
+        }
 
         if has_selection(original) {
             sel_coords := pos_coords;
@@ -1602,6 +1619,65 @@ create_cursor :: (using editor: *Editor, buffer: Buffer, where: enum { above; be
         main_cursor = cursors.count - 1;
     }
 
+    organise_cursors(editor);
+
+    cursor_moved = .refresh_only;
+}
+
+create_cursors_around :: (using editor: *Editor, buffer: Buffer) {
+    // (a) If cursor is mid-line, add cursors above-and-below it on all contiguous lines which are at least as long.
+    // (b) If the cursor is at the start of a line, add cursors above-and-below, bounded by empty lines.
+    // (c) If the cursor is on an empty line, add cursors above-and-below on all contiguous empty lines.
+
+    organise_cursors(editor);
+
+    from_cursors := NewArray(cursors.count, Cursor, initialized = false,, temp);
+    memcpy(from_cursors.data, cursors.data, cursors.count * size_of(Cursor));
+
+    for from_cursor : from_cursors {
+        from_pos_coords := offset_to_coords(editor, buffer, from_cursor.pos);
+        from_sel_coords := offset_to_coords(editor, buffer, from_cursor.sel);
+        from_cursor_is_at_line_end := from_cursor.pos == get_line_end_offset(editor, buffer, from_pos_coords.line);
+        from_line_is_empty := from_pos_coords.col == 0 && from_cursor_is_at_line_end;
+
+        add_cursors :: (position: Coords, direction: s32, terminator_line: int) #expand {
+            while position.line != terminator_line {
+                position.line += direction;
+                start := get_line_start_offset(editor, buffer, position.line);
+                end := get_line_end_offset(editor, buffer, position.line);
+                if !from_line_is_empty {
+                    if from_pos_coords.col > 0 {
+                        if !from_cursor_is_at_line_end then end -= 1;  // Only expand into line-ends if the original cursor was at the line-end.
+                        if end - start < from_pos_coords.col  break;  // (a)
+                    } else {
+                        if end == start  break;  // (b)
+                    }
+                } else {
+                    if end > start  break;  // (c)
+                }
+
+                cursor := add(*cursors);
+                cursor.* = from_cursor;
+                cursor.pos = coords_to_offset(editor, buffer, position);
+                cursor.col_wanted = from_pos_coords.col;
+
+                if has_selection(from_cursor) {
+                    sel_coords := position;
+                    sel_coords.line += from_sel_coords.line - from_pos_coords.line;
+                    sel_coords.col  += from_sel_coords.col  - from_pos_coords.col;
+                    cursor.sel = coords_to_offset(editor, buffer, sel_coords);
+                    cursor.sel = clamp(cursor.sel, start, end);
+                } else {
+                    cursor.sel = cursor.pos;
+                }
+            }
+        }
+
+        add_cursors(offset_to_coords(editor, buffer, from_cursor.pos), -1, 0);
+        add_cursors(offset_to_coords(editor, buffer, from_cursor.pos), +1, buffer.line_starts.count - 1);
+    }
+
+    main_cursor = cursors.count - 1;
     organise_cursors(editor);
 
     cursor_moved = .refresh_only;
@@ -3028,6 +3104,67 @@ delete_to_start_of_line :: (editor: *Editor, buffer: *Buffer) {
     }
     organise_cursors(editor);  // resolve overlapping selections
     copy_selection_to_clipboard(editor, buffer, cut = true, cut_lines_without_selection = false);
+}
+
+change_case_of_selected_text :: (editor: *Editor, buffer: *Buffer, mode: enum { upper; lower; caps; cycle; }) {
+    any_selection := false;
+    for editor.cursors { if has_selection(it) { any_selection = true; break; } }
+    if !any_selection {
+        cursor := leave_only_original_cursor(editor);
+        select_word(buffer, cursor);
+    }
+    for * cursor : editor.cursors {
+        if !has_selection(cursor)  continue;
+
+        selection := get_selection(cursor);
+        s := get_selected_string(cursor, buffer);
+
+        if mode == .cycle {
+            found_lower := false;
+            found_upper := false;
+            for 0 .. s.count - 1 {
+                if      is_lower(s[it])  found_lower = true;
+                else if is_upper(s[it])  found_upper = true;
+
+                if found_lower && found_upper  break;
+            }
+            if found_lower && found_upper  mode = .upper;
+            else if found_upper            mode = .lower;
+            else if found_lower            mode = .caps;
+            else                           continue;
+        }
+
+        if mode == {
+            case .upper;
+                for 0 .. s.count - 1 {
+                    s[it] = to_upper(s[it]);
+                }
+
+            case .lower;
+                for 0 .. s.count - 1 {
+                    s[it] = to_lower(s[it]);
+                }
+
+            case .caps;
+                caps_next := true;
+                for 0 .. s.count - 1 {
+                    if is_alpha(s[it]) {
+                        if caps_next {
+                            caps_next = false;
+                            s[it] = to_upper(s[it]);
+                        }
+                        else {
+                            s[it] = to_lower(s[it]);
+                        }
+                    }
+                    else {
+                        caps_next = true;
+                    }
+                }
+        }
+
+        replace_range(buffer, .{selection.start, selection.end}, s);
+    }
 }
 
 delete_to_end_of_line :: (editor: *Editor, buffer: *Buffer) {
