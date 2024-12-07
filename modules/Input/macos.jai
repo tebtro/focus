@@ -247,6 +247,14 @@ get_key_code :: (keycode: u16, char: u16 = 128) -> Key_Code {
     }
 }
 
+// Apple doesnt seem to document what the values returned by buttonNumber
+// other than a non-mouse event returns 0 (and yet a left click mouse event also returns 0)
+MLEFT    :: 0;
+MRIGHT   :: 1;
+MMIDDLE  :: 2;
+MBACK    :: 3;
+MFORWARD :: 4;
+
 update_cocoa_window_events :: () {
     using Key_Current_State;
 
@@ -393,24 +401,21 @@ update_cocoa_window_events :: () {
                 event.type = .KEYBOARD;
                 num := NSEvent.buttonNumber(nsevent);
 
-                // Apple doesnt seem to document what the values returned by buttonNumber
-                // other than a non-mouse event returns 0 (and yet a left click mouse event also returns 0)
-                MLEFT   :: 0;
-                MRIGHT  :: 1;
-                MMIDDLE :: 2;
-
-                if num > MMIDDLE {
-                    // we dont yet handle mouse buttons other than Left, Right, Middle
-                } else {
-                    if      num == MLEFT   then event.key_code = Key_Code.MOUSE_BUTTON_LEFT;
-                    else if num == MRIGHT  then event.key_code = Key_Code.MOUSE_BUTTON_RIGHT;
-                    else if num == MMIDDLE then event.key_code = Key_Code.MOUSE_BUTTON_MIDDLE;
+                if num <= MFORWARD {
+                    if num == {
+                        case MLEFT;    event.key_code = Key_Code.MOUSE_BUTTON_LEFT;
+                        case MRIGHT;   event.key_code = Key_Code.MOUSE_BUTTON_RIGHT;
+                        case MMIDDLE;  event.key_code = Key_Code.MOUSE_BUTTON_MIDDLE;
+                        case MBACK;    event.key_code = Key_Code.MOUSE_BUTTON_X1;
+                        case MFORWARD; event.key_code = Key_Code.MOUSE_BUTTON_X2;
+                    }
 
                     input_button_states[event.key_code] = (START | DOWN);
                     event.key_pressed = 1;
 
                     array_add(*events_this_frame, event);
                 }
+
             case NSEventTypeLeftMouseUp; #through;
             case NSEventTypeRightMouseUp; #through;
             case NSEventTypeOtherMouseUp;
@@ -424,12 +429,14 @@ update_cocoa_window_events :: () {
                 MRIGHT  :: 1;
                 MMIDDLE :: 2;
 
-                if num > MMIDDLE {
-                    // we dont yet handle mouse buttons other than Left, Right, Middle
-                } else {
-                    if      num == MLEFT   then event.key_code = Key_Code.MOUSE_BUTTON_LEFT;
-                    else if num == MRIGHT  then event.key_code = Key_Code.MOUSE_BUTTON_RIGHT;
-                    else if num == MMIDDLE then event.key_code = Key_Code.MOUSE_BUTTON_MIDDLE;
+                if num <= MFORWARD {
+                    if num == {
+                        case MLEFT;    event.key_code = Key_Code.MOUSE_BUTTON_LEFT;
+                        case MRIGHT;   event.key_code = Key_Code.MOUSE_BUTTON_RIGHT;
+                        case MMIDDLE;  event.key_code = Key_Code.MOUSE_BUTTON_MIDDLE;
+                        case MBACK;    event.key_code = Key_Code.MOUSE_BUTTON_X1;
+                        case MFORWARD; event.key_code = Key_Code.MOUSE_BUTTON_X2;
+                    }
 
                     input_button_states[event.key_code] = END;
                     event.key_pressed = 0;
@@ -648,6 +655,7 @@ create_window_delegate :: () -> *Window_Delegate {
         objc_add_instance_method(wd_class, Window_Delegate.windowWillClose,   "windowWillClose:");
         // objc_add_instance_method(wd_class, Window_Delegate.windowWillResize, "windowWillResize:toSize:");
         objc_add_instance_method(wd_class, Window_Delegate.windowDidResize, "windowDidResize:");
+        objc_add_instance_method(wd_class, Window_Delegate.windowDidChangeScreen, "windowDidChangeScreen:");
         objc_add_instance_method(wd_class, Window_Delegate.windowDidMiniaturize, "windowDidMiniaturize:");
         objc_add_instance_method(wd_class, Window_Delegate.windowDidDeminiaturize, "windowDidDeminiaturize:");
 
@@ -794,6 +802,14 @@ Window_Delegate :: struct {
             view.drawRect(view, frame);
         }
     } @selector(windowDidResize:)
+
+    windowDidChangeScreen :: (self: *Window_Delegate, _sel: Selector, notification: *NSNotification) #c_call {
+        // The backing scale factor might change when the window changes screen so we need to re-compute the width and height of the window. :MacHighResDisplays
+        jai_context: Context;
+        push_context jai_context {
+            objc_msgSend(self, selector("windowDidResize:"), notification);
+        }
+    } @selector(windowDidChangeScreen:)
 
     draggingEntered :: (using self: *Window_Delegate, _sel: Selector, sender: id /*id<NSDraggingInfo>*/) -> NSDragOperation #c_call {
         mask := NSDraggingInfo.draggingSourceOperationMask(sender);

@@ -186,6 +186,10 @@ main :: () {
         press_count := 0;
     };
 
+    // Start a timer to redraw regularly so that we don't wait for input to display something that's changed externally.
+    // This timer is fired less often than the cursor timer.
+    platform_set_refresh_timer(window);
+
     while true {
         if !redraw_requested platform_wait_message();
 
@@ -378,6 +382,7 @@ handle_common_editor_action :: (action: Action_Editors, placement: Editor_Placem
         case .open_project;                                     print("UNIMPLEMENTED\n");  /* !!!!!!!!!!!! */       return true;
         case .switch_to_project;                                show_dialog(*switch_to_project_dialog);             return true;
         case .close_project;                                    close_project();                                    return true;
+        case .reload_workspace;                                 defer_action_reload_workspace(automatic = false);   return true;
 
         case .choose_theme;                                     show_dialog(*theme_dialog);                         return true;
         case .edit_current_theme;                               edit_current_theme(placement);                      return true;
@@ -411,7 +416,8 @@ handle_common_editor_action :: (action: Action_Editors, placement: Editor_Placem
         case .move_to_previous_buffer;                          move_to_previous_editor_history(by_buffer = true);  return true;
         case .move_to_next_buffer;                              move_to_next_editor_history    (by_buffer = true);  return true;
 
-        case .toggle_build_panel;                               toggle_build_panel();                               return true;
+        case .build_panel_toggle;                               build_panel_toggle();                               return true;
+        case .build_panel_toggle_focus;                         build_panel_toggle_focus();                         return true;
 
         case .build_kill_running_command;                       build_kill_running_command();                       return true;
         case .build_clear_output;                               build_clear_output();                               return true;
@@ -447,6 +453,9 @@ maybe_execute_a_build_command :: (action: Action_Build) -> handled: bool {
 
 init_fonts_and_dependent_things :: () {
     push_allocator(focus_allocator);  // we sometimes call this from within a temp allocator
+
+    Simp.set_anti_aliasing(config.style.font_anti_aliasing);
+    Simp.set_hinting(config.style.font_hinting);
 
     font_main_size = clamp(font_main_size, MIN_FONT_SIZE, MAX_FONT_SIZE);
     font_ui_size   = clamp(font_ui_size  , MIN_FONT_SIZE, MAX_FONT_SIZE);
@@ -550,8 +559,12 @@ update_mouse_state :: () {
     // We do not allow the wheel mode to change mid operation: one operation has to finish before another can be
     // started (i.e. you have to hold ctrl before spinning the wheel if you want to resize the font).
     persist_scrollmode_duration :: 0.25;
-    if Input.mouse_wheel_delta.vertical {
-        mouse.last_wheel_y_time64 = frame_time64;
+
+    mouse.scroll_x_delta = 0;
+    mouse.scroll_y_delta = 0;
+
+    if Input.mouse_wheel_delta.vertical || Input.mouse_wheel_delta.horizontal {
+        mouse.last_wheel_time64 = frame_time64;
         if mouse.wheel_y_mode == .none {
             #if OS != .MACOS {
                 if ctrl_or_cmd_pressed()  mouse.wheel_y_mode = .sizing_font;
@@ -560,7 +573,7 @@ update_mouse_state :: () {
                 mouse.wheel_y_mode = .scrolling;
             }
         }
-    } else if frame_time64 > mouse.last_wheel_y_time64 + persist_scrollmode_duration {
+    } else if frame_time64 > mouse.last_wheel_time64 + persist_scrollmode_duration {
         mouse.wheel_y_mode = .none;
     }
 
@@ -610,6 +623,8 @@ update_mouse_state :: () {
     update_button(*mouse.left,   .MOUSE_BUTTON_LEFT);
     update_button(*mouse.right,  .MOUSE_BUTTON_RIGHT);
     update_button(*mouse.middle, .MOUSE_BUTTON_MIDDLE);
+    update_button(*mouse.x1,     .MOUSE_BUTTON_X1);
+    update_button(*mouse.x2,     .MOUSE_BUTTON_X2);
 }
 
 editor_toggle_fullscreen :: () {
@@ -782,8 +797,10 @@ Mouse_State :: struct {
     left:   Mouse_Button_State;
     right:  Mouse_Button_State;
     middle: Mouse_Button_State;
+    x1: Mouse_Button_State;
+    x2: Mouse_Button_State;
 
-    last_wheel_y_time64: float64;
+    last_wheel_time64: float64;
     wheel_y_mode : enum {
         none;
         scrolling;
@@ -812,8 +829,6 @@ WHOLE_WORD_ICON     :: #run to_string(*convert_utf32_to_utf8(0xe4ba));
 REGEX_SEARCH_ICON   :: #run to_string(*convert_utf32_to_utf8(0xf621));
 BULLET_ICON         :: #run to_string(*convert_utf32_to_utf8(0x2022));
 XMARK_ICON          :: #run to_string(*convert_utf32_to_utf8(0xf057));
-
-TAB_SIZE: s32 = 4;
 
 font_main:             *Simp.Dynamic_Font;
 font_ui:               *Simp.Dynamic_Font;
@@ -934,6 +949,7 @@ focus_allocator: Allocator;
 
 
 #load "array.jai";
+#load "actions.jai";
 #load "layout.jai";
 #load "editors.jai";
 #load "buffer.jai";
@@ -978,6 +994,7 @@ focus_allocator: Allocator;
 #load "langs/cpp.jai";
 #load "langs/css.jai";
 #load "langs/csharp.jai";
+#load "langs/d.jai";
 #load "langs/focus_config.jai";
 #load "langs/glsl.jai";
 #load "langs/hlsl.jai";
@@ -1093,7 +1110,6 @@ MAX_FONT_SIZE :: 30;  // setting a larger size has caused freetype to crash - no
                       // Probably we don't give it enough memory for a glyph bitmap when rendering it?
 
 
-DEBUG_FILE_REFRESH :: false;  // TODO: remove when done debugging
 DEBUG_MEMORY_LEAKS :: false;
 
 

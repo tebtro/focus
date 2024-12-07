@@ -1,4 +1,6 @@
-CURRENT_CONFIG_VERSION :: 6;
+// Increment this if your PR adds a setting, color or default keybinding (and amend the relevant array
+// in config_migrator.jai).  You don't need to increase it for each such change; once per PR is fine.
+CURRENT_CONFIG_VERSION :: 13;
 
 load_global_config :: (fallback_to_default_on_failure := false, force := false) -> success: bool, changed: bool, there_were_warnings: bool {
     config_path := tprint("%/global.focus-config", config_dir);
@@ -172,10 +174,17 @@ refresh_config :: (path: string) {
             lang := get_lang_from_path(buffer.file.full_path);
             if lang != buffer.lang {
                 buffer.lang = lang;
+                recalculate_settings(buffer);
                 retokenize(buffer);
             }
         }
         add_success_message("File associations have been refreshed", dismiss_in_seconds = 3);
+    }
+
+    // If indentation rules changed, refresh them for all open editors
+    for editor : open_editors {
+        buffer := *open_buffers[editor.buffer_id];
+        maybe_detect_and_set_indentation(buffer);
     }
 
     commands_refresh_after_config_change();
@@ -435,8 +444,24 @@ merge_configs :: (dst: *Config, parsed: Parsed_Config) {
         return builder_to_string(*b);
     }
 
+    // Merge file-specific settings
+    // NOTE: if you have file-specific settings in the global config, they will take priority over any
+    //       non-file-specific settings added in the project config
+    old_file_specific_settings_count := dst.file_specific_settings.count;
+    array_resize(*dst.file_specific_settings, dst.file_specific_settings.count + parsed.file_specific_settings.count);
+    for i : 0 .. parsed.file_specific_settings.count-1 {
+        dst_setting := *dst.file_specific_settings[old_file_specific_settings_count + i];
+        src_setting := *parsed.file_specific_settings[i];
+        dst_setting.overrides = src_setting.overrides;
+        dst_setting.match_rules.langs     = array_copy(src_setting.match_rules.langs);
+        dst_setting.match_rules.wildcards = array_copy(src_setting.match_rules.wildcards);
+        for * dst_setting.match_rules.wildcards  it.* = copy_string(it.*);  // @leak
+    }
+
     // Style
     if parsed.theme then dst.style.theme = copy_string(parsed.theme); /* @leak */  // TODO: rework how themes and styles are applied
+    if parsed.font_anti_aliasing.is_set then dst.style.font_anti_aliasing = parsed.font_anti_aliasing.value;
+    if parsed.font_hinting.is_set       then dst.style.font_hinting       = parsed.font_hinting.value;
     apply_style(parsed);
 
     // Platform config
@@ -444,19 +469,6 @@ merge_configs :: (dst: *Config, parsed: Parsed_Config) {
 }
 
 apply_config :: () {
-    // Make sure the values are within the acceptable range
-    old_tab_size := TAB_SIZE;
-    TAB_SIZE = clamp(cast(s32) config.settings.tab_size, 1, 100);  // be reasonable mkay (though even 100 is unreasonable)
-    if config.settings.tab_size != TAB_SIZE then add_user_warning("Tab size clamped to %", TAB_SIZE);
-
-    if old_tab_size != TAB_SIZE {
-        // Refresh all editors which have line wrap on
-        for * editor : open_editors {
-            buffer := *open_buffers[editor.buffer_id];
-            if line_wrap_is_active(editor) then rescan_for_wrapped_lines(editor, buffer);
-        }
-    }
-
     clamp_and_warn :: (setting: *$T, min: T, max: T, message: string) {
         old := setting.*;
         clamped := clamp(old, min, max);
@@ -465,6 +477,17 @@ apply_config :: () {
             setting.* = clamped;
         }
     }
+
+    clamp_and_warn(*config.settings.tab_size, 1, 100, "Tab size clamped to %");
+
+    if old_tab_size != config.settings.tab_size {
+        // Refresh all editors which have line wrap on
+        for * editor : open_editors {
+            buffer := *open_buffers[editor.buffer_id];
+            if line_wrap_is_active(editor) then rescan_for_wrapped_lines(editor, buffer);
+        }
+    }
+    old_tab_size = config.settings.tab_size;
 
     clamp_and_warn(*config.settings.line_height_scale_percent,  50,  1000,        "Line height scale clamped to % percent");
     clamp_and_warn(*config.settings.editor_history_size,        4,   1024 * 1024, "Editor history size clamped to %");
@@ -481,6 +504,10 @@ apply_config :: () {
     build_panel_height_anim.target = build_panel_height;
     build_panel_set_line_wrap(config.settings.build_panel_line_wrap_always_on);
 
+    // NOTE: this is potentially expensive, and apply_config as it's currently set up could be called 3 times
+    // However, we expect to fix it soon
+    for * open_buffers  recalculate_settings(it);
+
     // Must do after the validation
     init_fonts_and_dependent_things();
 
@@ -489,6 +516,9 @@ apply_config :: () {
     array_reset_keeping_memory(*active_hold_actions);  // NOTE: this doesn't actually stop the actions, it's just here so that we don't
                                                        //       keep pointers to old keymaps when the config is reloaded
 }
+
+old_tab_size := 0;  // used to detect when tab size is changed in the config
+
 
 load_font_by_name :: (name: string, kind: enum { main; ui; ui_bold; }) -> Loaded_Font, success: bool {
     if name == "default" {
@@ -532,7 +562,10 @@ project_config: Loaded_Config;
 Config :: struct {
     workspace: Workspace;
     keymap:    Keymap;
+
     settings:  Settings;
+    file_specific_settings: [] File_Specific_Settings;
+
     style:     Style;
     build:     Build_Config;
     linux:     Linux_Config;
@@ -540,7 +573,8 @@ Config :: struct {
 
 Style :: struct {
     theme: string;
-    // TODO: add other things in there at some point
+    font_anti_aliasing: Font_Anti_Aliasing = .lcd;
+    font_hinting := true;
 }
 
 Loaded_Font :: struct {
@@ -571,89 +605,186 @@ Workspace :: struct {
 }
 
 Settings :: struct {
-    maximize_on_start                                       := false;
-    open_on_the_biggest_monitor                             := true;
-    window_width                                            := -1;
-    window_height                                           := -1;
-    window_x                                                := -1000;  // using -1000 because -1 could be a valid value someone might want
-    window_y                                                := -1000;
-    cursor_as_block                                         := true;
-    cursor_blink_time_in_seconds                            := 5;
-    highlight_selection_occurrences                         := true;
-    highlight_line_with_cursor                              := false;
-    highlight_matching_brackets                             := false;
-    show_paste_effect                                       := true;
-    disable_file_open_close_animations                      := false;
-    disable_viewport_chasing_cursor_near_the_edge           := false;
-    double_shift_to_search_in_workspace                     := false;
-    tab_size                                                := 4;
-    insert_spaces_when_pressing_tab                         := true;
-    strip_trailing_whitespace_on_save                       := Strip_Trailing_Whitespace.except_lines_with_cursor;
-    insert_final_newline_on_save                            := false;
-    smooth_scrolling                                        := true;
-    scroll_beyond_last_line                                 := true;
-    line_height_scale_percent                               := 120;
-    max_editor_width                                        := -1;
-    can_cancel_go_to_line                                   := true;
-    copy_whole_line_without_selection                       := false;
-    editor_history_size                                     := 128;
-    line_wrap_is_on_by_default                              := false;
-    show_line_numbers                                       := false;
-    dark_titlebar                                           := false;
-    colored_titlebar                                        := true;
-    hide_mouse_when_typing                                  := true;
-    draw_indent_guides                                      := false;
-    auto_surround_with_brackets_and_quotes                  := false;
-    auto_close_brackets                                     := false;
-    prefer_system_file_dialogs                              := false;
-    show_cursors_off_screen                                 := true;
-    persist_local_search_results                            := false;
-    search_is_case_sensitive_when_uppercase_present         := false;
-    show_selected_text_length                               := false;
-    load_most_recent_project_on_start                       := false;
-
-    auto_delete_brackets                                    := false;
-    auto_skip_closing_brackets                              := false;
-
-    build_panel_width_percent                               := 50;
-    build_panel_height_percent                              := 50;
-    build_panel_stays_in_one_place                          := false;
-    build_panel_line_wrap_always_on                         := true;
-
-    save_current_buffer_on_build                            := false;
-    save_all_file_backed_buffers_on_build                   := false;
-
-    status_bar_position                                     := Status_Bar_Position.bottom;
-    color_preview_popup                                     := Color_Preview_Popup.enabled;
-    projects_sorting_order                                  := Projects_Sorting_Order.most_recent_first;
+    // Global settings that apply to the editor as a whole
+    maximize_on_start                                       := false;   @v1
+    open_on_the_biggest_monitor                             := true;    @v1
+    window_width                                            := -1;      @v4
+    window_height                                           := -1;      @v4
+    window_x                                                := -1000;   @v1  // using -1000 because -1 could be a valid value someone might want
+    window_y                                                := -1000;   @v1
+    cursor_blink_time_in_seconds                            := 5;       @v1
+    disable_file_open_close_animations                      := false;   @v1
+    disable_viewport_chasing_cursor_near_the_edge           := false;   @v3
+    smooth_scrolling                                        := true;    @v1
+    show_paste_effect                                       := true;    @v6
+    line_height_scale_percent                               := 120;     @v1
+    can_cancel_go_to_line                                   := true;    @v1
+    hide_mouse_when_typing                                  := true;    @v1
+    dark_titlebar                                           := false;   @v1
+    colored_titlebar                                        := true;    @v1
+    copy_whole_line_without_selection                       := false;   @v1
+    prefer_system_file_dialogs                              := false;   @v1
+    persist_local_search_results                            := false;   @v2
+    search_is_case_sensitive_when_uppercase_present         := false;   @v6
+    load_most_recent_project_on_start                       := false;   @v5
+    build_panel_width_percent                               := 50;      @v2
+    build_panel_height_percent                              := 50;      @v2
+    build_panel_stays_in_one_place                          := false;   @v2
+    build_panel_line_wrap_always_on                         := true;    @v2
+    projects_sorting_order                                  := Projects_Sorting_Order.most_recent_first;    @v6
+    color_preview_popup                                     := Color_Preview_Popup.enabled;                 @v5
+    save_current_buffer_on_build                            := false;   @v3
+    save_all_file_backed_buffers_on_build                   := false;   @v3
+    double_shift_to_search_in_workspace                     := false;   @v1
+    editor_history_size                                     := 1024;    @v1
 
     // TODO
-    // convert_tabs_to_spaces_on_load:     false
     // load_last_session_on_start:         true
+
+    // Settings which can be overridden in a file-specific block
+    show_line_numbers                                       := false;                                               @v1  @overridable
+    cursor_as_block                                         := true;                                                @v1  @overridable
+    highlight_selection_occurrences                         := true;                                                @v1  @overridable
+    highlight_line_with_cursor                              := false;                                               @v2  @overridable
+    highlight_matching_brackets                             := false;                                               @v5  @overridable
+    strip_trailing_whitespace_on_save                       := Strip_Trailing_Whitespace.except_lines_with_cursor;  @v6  @overridable
+    insert_final_newline_on_save                            := false;                                               @v4  @overridable
+    scroll_beyond_last_line                                 := true;                                                @v2  @overridable
+    max_editor_width                                        := -1;                                                  @v1  @overridable
+    line_wrap_is_on_by_default                              := false;                                               @v1  @overridable
+    show_ruler_at_column                                    := 0;                                                   @v7  @overridable
+    draw_indent_guides                                      := false;                                               @v2  @overridable
+    auto_surround_with_brackets_and_quotes                  := false;                                               @v2  @overridable
+    auto_close_brackets                                     := false;                                               @v1  @overridable
+    detect_indentation                                      := true;                                                @v11 @overridable
+    indent_using                                            := Indentation.spaces;                                  @v11 @overridable
+    tab_size                                                := 4;                                                   @v1  @overridable
+    status_bar_position                                     := Status_Bar_Position.bottom;                          @v4  @overridable
+    status_bar_show_indentation                             := true;                                                @v11 @overridable
+    status_bar_show_line_col                                := true;                                                @v11 @overridable
+    status_bar_show_cursors_off_screen                      := true;                                                @v11 @overridable
+    status_bar_show_selected_text_length                    := false;                                               @v3  @overridable
 }
 
-Status_Bar_Position :: enum {
-    bottom;
-    top;
+// Generate a struct for the settings that can be overridden
+#insert -> string {
+    b: String_Builder;
+    append(*b, "Settings_Overrides :: struct {\n");
+
+    for setting : type_info(Settings).members {
+        if !array_find(setting.notes, "overridable") continue;
+
+        type_name: string;
+        if setting.type.type == {
+            case .INTEGER;  type_name = "int";
+            case .BOOL;     type_name = "bool";
+            case .ENUM;     type_name = (cast(*Type_Info_Enum) setting.type).name;
+            case;           compiler_report(tprint("Found an overridable setting '%' of an unsupported type", setting.name));
+        }
+
+        print_to_builder(*b, "    %: Option(%);\n", setting.name, type_name);
+    }
+
+    append(*b, "}\n");
+    return builder_to_string(*b);
 }
 
-Strip_Trailing_Whitespace :: enum {
-    except_lines_with_cursor;
-    all;
-    disabled;
+is_overridable_setting :: (name: string) -> bool {
+    setting := get_field(type_info(Settings), name);
+    return array_find(setting.notes, "overridable");
 }
 
-Color_Preview_Popup :: enum {
-    enabled;
-    minimized;
-    disabled;
+get_overridable_setting_names :: () -> [] string /* temp */ {
+    result: [..] string;
+    result.allocator = temp;
+
+    for type_info(Settings_Overrides).members {
+        array_add(*result, it.name);
+    }
+
+    return result;
 }
 
-Projects_Sorting_Order :: enum {
-    most_recent_first;
-    alphabetical;
-    alphabetical_no_case;
+Indentation               :: enum { spaces; tabs; }
+Status_Bar_Position       :: enum { bottom; top; }
+Strip_Trailing_Whitespace :: enum { except_lines_with_cursor; all; disabled; }
+Color_Preview_Popup       :: enum { enabled; minimized; disabled; }
+Projects_Sorting_Order    :: enum { most_recent_first; alphabetical; alphabetical_no_case; }
+
+Font_Anti_Aliasing        :: enum { lcd; normal; }
+#poke_name Simp Font_Anti_Aliasing;
+
+File_Specific_Settings :: struct {
+    match_rules: Match_Rules;
+    overrides:   Settings_Overrides;
+
+    Match_Rules :: struct {
+        langs: [] Buffer.Lang;
+        wildcards: [] string;
+    }
 }
+
+buffer_matches_file_specific_rules :: (buffer: Buffer, match_rules: File_Specific_Settings.Match_Rules) -> bool {
+    if array_find(match_rules.langs, buffer.lang) return true;
+    if buffer.has_file {
+        for match_rules.wildcards  {
+            if path_wildcard_match(buffer.file.name, it) || path_wildcard_match(buffer.file.full_path, it)  return true;
+        }
+    }
+    return false;
+}
+
+get_settings :: inline (buffer: Buffer) -> *Settings {
+    lock(*buffer.content_lock);
+    defer unlock(*buffer.content_lock);
+
+    if buffer.settings != null return buffer.settings;
+    return *config.settings;
+}
+
+recalculate_settings :: (buffer: *Buffer) {
+    has_file_specific_settings := false;
+    aggregate_settings := config.settings;
+    for * config.file_specific_settings {
+        if buffer_matches_file_specific_rules(buffer, it.match_rules) {
+            _override_settings(*aggregate_settings, it.overrides);
+            has_file_specific_settings = true;
+        }
+    }
+
+    lock(*buffer.content_lock);
+    {
+        if has_file_specific_settings {
+            if buffer.settings == null then buffer.settings = New(Settings, initialized = false,, focus_allocator);
+            buffer.settings.* = aggregate_settings;
+        } else if buffer.settings != null {
+            free(buffer.settings,, focus_allocator);
+            buffer.settings = null;
+        }
+    }
+    unlock(*buffer.content_lock);
+
+    maybe_detect_and_set_indentation(buffer);
+}
+
+
+#scope_file
+
+_override_settings :: (dst: *Settings, overrides: Settings_Overrides) {
+    #insert -> string {
+        b: String_Builder;
+        for type_info(Settings_Overrides).members {
+            code :: #string JAI
+                if overrides.%1.is_set { dst.%1 = overrides.%1.value; }
+            JAI
+            print_to_builder(*b, code, it.name);
+        }
+        return builder_to_string(*b);
+    }
+}
+
+
+#scope_export
 
 Keymap :: struct {
     common:           [] Key_Mapping;
@@ -701,9 +832,6 @@ Build_Command :: struct {
     timeout_in_seconds:                 int = -1;
 }
 
-DEFAULT_CONFIG_FILE_DATA  :: #run read_entire_file(tprint("config/%", DEFAULT_CONFIG_NAME));
-EXAMPLE_PROJECT_FILE_DATA :: #run read_entire_file(tprint("config/%", EXAMPLE_PROJECT_CONFIG_NAME));
-
 #scope_file
 
 #if OS == .MACOS {
@@ -716,17 +844,35 @@ EXAMPLE_PROJECT_CONFIG_NAME :: "example-project.focus-config";
 
 #scope_export
 
-DEFAULT_CONFIG :: #run,stallable -> Config {
-    result := parse_config("Default Config", DEFAULT_CONFIG_NAME, DEFAULT_CONFIG_FILE_DATA);
-    assert(result.success, "Couldn't parse the default config file '%'. Error: %", DEFAULT_CONFIG_NAME, result.error_msg);
-    default_config: Config;
-    merge_configs(*default_config, result.config);
-    DEFAULT_COLOR_MAP = COLOR_MAP;  // remember the default color map
-    return default_config;
-};
+#if !NO_OUTPUT_BUILD {
+    read_default_config_data :: (name: string) -> string {
+        data := read_entire_file(tprint("config/%", name));
+        data_with_replaced_version, occurrences := replace(data, "[0]  # Version", tprint("[%]  # Version", CURRENT_CONFIG_VERSION));
+        assert(occurrences == 1, "Error when trying to replace the default config version in '%'", name);
+        return data_with_replaced_version;
+    }
 
-// Validate the example project config
-#run,stallable {
-    result := parse_config("Example Project Config", EXAMPLE_PROJECT_CONFIG_NAME, EXAMPLE_PROJECT_FILE_DATA);
-    assert(result.success, "Couldn't parse the example project config file '%'", EXAMPLE_PROJECT_CONFIG_NAME);
+    DEFAULT_CONFIG_FILE_DATA  :: #run read_default_config_data(DEFAULT_CONFIG_NAME);
+    EXAMPLE_PROJECT_FILE_DATA :: #run read_default_config_data(EXAMPLE_PROJECT_CONFIG_NAME);
+
+    DEFAULT_CONFIG :: #run,stallable -> Config {
+        result := parse_config("Default Config", DEFAULT_CONFIG_NAME, DEFAULT_CONFIG_FILE_DATA);
+        assert(result.success, "Couldn't parse the default config file '%'. Error: %", DEFAULT_CONFIG_NAME, result.error_msg);
+        check_added_keybinds(result.config);
+        default_config: Config;
+        merge_configs(*default_config, result.config);
+        DEFAULT_COLOR_MAP = COLOR_MAP;  // remember the default color map
+        return default_config;
+    };
+
+    // Validate the example project config
+    #run,stallable {
+        result := parse_config("Example Project Config", EXAMPLE_PROJECT_CONFIG_NAME, EXAMPLE_PROJECT_FILE_DATA);
+        assert(result.success, "Couldn't parse the example project config file '%'", EXAMPLE_PROJECT_CONFIG_NAME);
+    }
+
+} else {
+    DEFAULT_CONFIG_FILE_DATA :: "";
+    EXAMPLE_PROJECT_FILE_DATA :: "";
+    DEFAULT_CONFIG: Config;
 }

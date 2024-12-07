@@ -26,6 +26,7 @@ deinit_build_system :: () {
     build_buffer_id = -1;
     build_editor_id = -1;
     running_command = "";
+    last_command_result = .{};
 }
 
 execute_build_command :: (command: *Build_Command) {
@@ -226,7 +227,7 @@ build_system_update :: () {
     }
 }
 
-toggle_build_panel :: () {
+build_panel_toggle :: () {
     if build_panel_is_shown {
         hide_build_panel();
     } else {
@@ -280,7 +281,20 @@ build_panel_lose_focus :: () {
     }
 }
 
-toggle_build_panel_height :: () {
+build_panel_grab_focus :: () {
+    if !build_panel_is_shown then show_build_panel();
+    make_editor_active(build_editor_id);
+}
+
+build_panel_toggle_focus :: () {
+    if editors.active == build_editor_id {
+        build_panel_lose_focus();
+    } else {
+        build_panel_grab_focus();
+    }
+}
+
+build_panel_toggle_height :: () {
     target := ifx build_panel_is_expanded then config.settings.build_panel_height_percent / 100.0 else 1.0;
     target = clamp(target, 0.1, 1.0);
 
@@ -509,7 +523,7 @@ substitute_variables :: (using work: *Build_Thread_Work) {
         if is_build_panel(current_editor_id) then current_editor_id = editors.left;
         if is_build_panel(current_editor_id) then current_editor_id = editors.right;
 
-        if current_editor_id >= 0 {
+        if current_editor_id >= 0 && current_editor_id < open_editors.count {
             buffer := open_buffers[open_editors[current_editor_id].buffer_id];
             if buffer.has_file then file = copy_string(buffer.file.full_path);
         }

@@ -62,6 +62,12 @@ deinit_open_file_dialog :: () {
     array_reset(*entries.filtered,, allocator = Allocator.{ proc = flat_pool_allocator_proc, data = *memory_pool });
 }
 
+open_file_dialog_maybe_refresh_entries :: inline () {
+    if !open_file_dialog.should_refresh_entries return;
+    refresh_entries(clear_input = false);
+    open_file_dialog.should_refresh_entries = false;
+}
+
 show_open_file_dialog :: (mode: Open_File_Dialog.Mode, buffer_id_to_save: s64 = -1, triggered_by: Deferred_Action_Id = -1, from_root := false) {
     if !from_root {
         // Derive the path chunks from the current open file
@@ -106,6 +112,7 @@ close_open_file_dialog :: (result: Open_File_Dialog.Result, selected_path := "")
 
 open_file_dialog_get_result :: (action_id: Deferred_Action_Id) -> Open_File_Dialog.Result, string {
     if action_id != open_file_dialog.triggered_by_action  return .UNINITTED, "";
+    if active_global_widget != .open_file_dialog && open_file_dialog.result == .PENDING then close_open_file_dialog(.CANCEL);
     return open_file_dialog.result, open_file_dialog.selected_path;
 }
 
@@ -433,6 +440,14 @@ refresh_entries :: (clear_input := true) {
                     entry.name_highlights = name_highlights;
                     entry.path_highlights = .[];
 
+                    // If we have a buffer for this file we want to show if it's modified or modified on disk
+                    buffer_id := find_buffer_id_by_path(entry.full_path);
+                    if buffer_id >= 0 {
+                        buffer := *open_buffers[buffer_id];
+                        if buffer.modified         then entry.flags |= .MODIFIED;
+                        if buffer.modified_on_disk then entry.flags |= .MODIFIED_ON_DISK;
+                    }
+
                     is_dir_part: u64 = (cast,trunc(u64) (entry.type == .folder)) << 56;  // directories come first
                     score_part:  u64 = (cast,trunc(u64) score)                   << 16;
                     entry.sort_key = is_dir_part | score_part;
@@ -451,17 +466,6 @@ refresh_entries :: (clear_input := true) {
             }
     }
 
-    if !(mode == .open_editors && !input.text) {  // don't sort most recent buffers if no filters are used
-
-        compare_entries :: (e1: Entry, e2: Entry) -> s64 {
-            key_diff := cast,no_check(s64) e2.sort_key - cast,no_check(s64) e1.sort_key;
-            if key_diff != 0 return key_diff;
-            return memcmp(e1.name.data, e2.name.data, min(e1.name.count, e2.name.count));
-        }
-
-        quick_sort(entries.filtered, compare_entries);
-    }
-
     if (mode == .save || mode == .move) && !is_empty(input.text) && path_chunks {
         entry_name: string;
         if mode == .save {
@@ -475,7 +479,19 @@ refresh_entries :: (clear_input := true) {
             type = .save,
             name_highlights = .[],
             path_highlights = .[],
+            sort_key = (1 << 55),  // show after directories but before files (so that people can easily descend into dirs but save as a new file by default)
         });
+    }
+
+    if !(mode == .open_editors && !input.text) {  // don't sort most recent buffers if no filters are used
+
+        compare_entries :: (e1: Entry, e2: Entry) -> s64 {
+            key_diff := cast,no_check(s64) e2.sort_key - cast,no_check(s64) e1.sort_key;
+            if key_diff != 0 return key_diff;
+            return memcmp(e1.name.data, e2.name.data, min(e1.name.count, e2.name.count));
+        }
+
+        quick_sort(entries.filtered, compare_entries);
     }
 
     if !entries.filtered {
@@ -524,11 +540,6 @@ scan_current_folder :: () {
 
     visitor_func :: (file: *File_Visit_Info, userdata: *void) {
         if file.had_error || file.is_symlink return;
-        if file.is_directory {
-            if !should_descend_into_dir(file.full_name) return;
-        } else {
-            if should_ignore_path(file.full_name) return;
-        }
 
         full_path := copy_string(file.full_name);  // one allocation in the pool, the rest are views into it
 
@@ -569,6 +580,7 @@ open_file_dialog: Open_File_Dialog;
 
 Open_File_Dialog :: struct {
     initted := false;
+    should_refresh_entries := false;
 
     mode: Mode;
     triggered_by_action: Deferred_Action_Id = -1;
